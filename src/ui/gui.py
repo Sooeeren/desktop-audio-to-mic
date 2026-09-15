@@ -113,7 +113,7 @@ QFrame.card {
     background-color: #2b2d31;
     border-radius: 10px;
     border: 1px solid #35373c;
-    padding: 12px;
+    padding: 0px;
 }
 
 QLabel {
@@ -321,10 +321,98 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
-class NoWheelSlider(QSlider):
-    """QSlider that ignores mouse wheel events so scrolling the parent view doesn't accidentally change values."""
+class GradientSlider(QSlider):
+    """
+    Modern custom slider featuring a multi-color gradient active track,
+    glowing thumb with hover halo, direct-click seeking, and wheel event ignore.
+    """
+    def __init__(self, orientation=Qt.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setFixedHeight(26)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover = False
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
     def wheelEvent(self, event):
         event.ignore()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            track_margin = 10
+            usable_w = self.width() - 2 * track_margin
+            if usable_w > 0:
+                pos = max(0, min(event.position().x() - track_margin, usable_w))
+                ratio = pos / usable_w
+                new_val = int(self.minimum() + ratio * (self.maximum() - self.minimum()))
+                self.setValue(new_val)
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        track_margin = 10
+        track_h = 6
+        track_y = (h - track_h) / 2.0
+        usable_w = w - 2 * track_margin
+
+        # Background track
+        groove_path = QPainterPath()
+        groove_path.addRoundedRect(track_margin, track_y, usable_w, track_h, 3, 3)
+        painter.fillPath(groove_path, QColor("#1e1f22"))
+
+        # Filled active track
+        span = self.maximum() - self.minimum()
+        val = self.value() - self.minimum()
+        ratio = val / span if span > 0 else 0.0
+        handle_x = track_margin + ratio * usable_w
+
+        if handle_x > track_margin:
+            filled_path = QPainterPath()
+            filled_path.addRoundedRect(track_margin, track_y, handle_x - track_margin, track_h, 3, 3)
+
+            grad = QLinearGradient(track_margin, 0, w - track_margin, 0)
+            grad.setColorAt(0.0, QColor("#5865f2"))  # Blurple
+            grad.setColorAt(0.5, QColor("#23a55a"))  # Emerald Green (100% unity gain)
+            grad.setColorAt(0.8, QColor("#f0b232"))  # Amber (boost)
+            grad.setColorAt(1.0, QColor("#f23f43"))  # Red (200% overdrive)
+
+            painter.fillPath(filled_path, grad)
+
+        # Thumb Handle
+        thumb_r = 8 if self._hover else 7
+        if self._hover:
+            halo = QPainterPath()
+            halo.addEllipse(handle_x - thumb_r - 3, h / 2.0 - thumb_r - 3, (thumb_r + 3) * 2, (thumb_r + 3) * 2)
+            painter.fillPath(halo, QColor(88, 101, 242, 60))
+
+        thumb = QPainterPath()
+        thumb.addEllipse(handle_x - thumb_r, h / 2.0 - thumb_r, thumb_r * 2, thumb_r * 2)
+        painter.fillPath(thumb, QColor("#ffffff"))
+
+        inner = QPainterPath()
+        inner_r = thumb_r - 3
+        inner.addEllipse(handle_x - inner_r, h / 2.0 - inner_r, inner_r * 2, inner_r * 2)
+        inner_color = QColor("#5865f2") if ratio < 0.5 else QColor("#23a55a") if ratio < 0.8 else QColor("#f0b232")
+        painter.fillPath(inner, inner_color)
+
+        painter.end()
+
+
+class NoWheelSlider(GradientSlider):
+    """Backwards-compatible alias for GradientSlider."""
+    pass
 
 
 class VUMeter(QProgressBar):
@@ -332,7 +420,7 @@ class VUMeter(QProgressBar):
         super().__init__(parent)
         self.setTextVisible(False)
         self.setRange(0, 100)
-        self.setFixedHeight(8)
+        self.setFixedHeight(10)
         self.setStyleSheet("""
             QProgressBar {
                 background-color: #1e1f22;
@@ -360,7 +448,7 @@ class ProAudioVisualizer(QWidget):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.num_bars = 32
+        self.num_bars = 48
         self.bar_values = np.zeros(self.num_bars, dtype=np.float32)
         self.peak_values = np.zeros(self.num_bars, dtype=np.float32)
         self.decay = 0.82
@@ -639,8 +727,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.splash = splash
         self.setWindowTitle("Discord Desktop Audio Mic")
-        self.resize(650, 880)
-        self.setMinimumWidth(520)
+        self.resize(1040, 680)
+        self.setMinimumSize(980, 620)
 
         if self.splash:
             self.splash.set_progress(25, "Initializing audio engine...")
@@ -683,37 +771,34 @@ class MainWindow(QMainWindow):
         central_widget.setObjectName("centralWidget")
         self.setCentralWidget(central_widget)
 
-        main_vbox = QVBoxLayout(central_widget)
-        main_vbox.setContentsMargins(16, 16, 6, 16)
-        main_vbox.setSpacing(12)
+        root = QVBoxLayout(central_widget)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.viewport().setAttribute(Qt.WA_AcceptTouchEvents, False)
-
-        content_widget = QWidget()
-        content_vbox = QVBoxLayout(content_widget)
-        content_vbox.setSpacing(12)
-        content_vbox.setContentsMargins(0, 0, 10, 0)
-
-        # ----------------- HEADER CARD -----------------
+        # ----------------- 1. HEADER BAR -----------------
         header_card = QFrame()
         header_card.setProperty("class", "card")
-        header_layout = QHBoxLayout(header_card)
+        hl = QHBoxLayout(header_card)
+        hl.setContentsMargins(14, 8, 14, 8)
 
-        title_col = QVBoxLayout()
-        app_title = QLabel("🎙️ Discord Desktop Audio Mic")
-        app_title.setProperty("class", "title")
-        app_sub = QLabel("Stream your game, music & desktop sound into Discord voice chat")
-        app_sub.setProperty("class", "subtitle")
-        app_sub.setWordWrap(True)
-        title_col.addWidget(app_title)
-        title_col.addWidget(app_sub)
-        header_layout.addLayout(title_col)
+        t_col = QVBoxLayout()
+        t_col.setSpacing(2)
+        t_row = QHBoxLayout()
+        title = QLabel("🎙️ Desktop Audio to Mic")
+        title.setProperty("class", "title")
+        ver = QLabel("v1.3.0")
+        ver.setStyleSheet("color: #5865f2; font-size: 11px; font-weight: bold; background: #1e1f22; padding: 2px 8px; border-radius: 4px;")
+        t_row.addWidget(title)
+        t_row.addWidget(ver)
+        t_row.addStretch()
+        t_col.addLayout(t_row)
 
-        header_layout.addStretch()
+        sub = QLabel("Stream your PC audio directly into Discord with uncompressed studio-grade fidelity")
+        sub.setProperty("class", "subtitle")
+        t_col.addWidget(sub)
+        hl.addLayout(t_col)
+
+        hl.addStretch()
 
         self.status_pill = QLabel("● OFFLINE")
         self.status_pill.setStyleSheet("""
@@ -724,271 +809,313 @@ class MainWindow(QMainWindow):
             font-weight: bold;
             font-size: 12px;
         """)
-        header_layout.addWidget(self.status_pill)
-        content_vbox.addWidget(header_card)
+        hl.addWidget(self.status_pill)
 
-        # ----------------- MAIN TOGGLE BUTTON -----------------
         self.btn_toggle_stream = QPushButton("▶  START STREAMING TO DISCORD")
         self.btn_toggle_stream.setProperty("class", "primary")
         self.btn_toggle_stream.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_stream.setStyleSheet("""
+            QPushButton {
+                background-color: #5865f2;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 10px 22px;
+                border-radius: 6px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #4752c4;
+            }
+        """)
         self.btn_toggle_stream.clicked.connect(self._toggle_stream)
-        content_vbox.addWidget(self.btn_toggle_stream)
+        hl.addWidget(self.btn_toggle_stream)
+        root.addWidget(header_card)
 
-        # ----------------- CARD 1: AUDIO ROUTING -----------------
-        routing_card = QFrame()
-        routing_card.setProperty("class", "card")
-        routing_vbox = QVBoxLayout(routing_card)
-        routing_vbox.setSpacing(10)
+        # ----------------- 2. TWO-COLUMN DASHBOARD GRID -----------------
+        grid = QHBoxLayout()
+        grid.setSpacing(10)
 
-        sec1_header = QHBoxLayout()
-        sec1_title = QLabel("📡 Audio Device Routing")
-        sec1_title.setProperty("class", "sectionHeading")
-        btn_refresh = QPushButton("🔄 Refresh Devices")
+        # === LEFT COLUMN: AUDIO INPUTS & MIXER ===
+        left_col = QVBoxLayout()
+        left_col.setSpacing(10)
+
+        # Card 1: Desktop Channel
+        c1 = QFrame()
+        c1.setProperty("class", "card")
+        c1_v = QVBoxLayout(c1)
+        c1_v.setContentsMargins(14, 12, 14, 12)
+        c1_v.setSpacing(8)
+
+        head_row1 = QHBoxLayout()
+        t1 = QLabel("1. Desktop Audio Source (Loopback)")
+        t1.setProperty("class", "sectionHeading")
+        head_row1.addWidget(t1)
+        head_row1.addStretch()
+        btn_refresh = QPushButton("🔄 Refresh")
         btn_refresh.setCursor(Qt.PointingHandCursor)
+        btn_refresh.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 4px 8px; border-radius: 4px;")
         btn_refresh.clicked.connect(self._load_devices)
-        sec1_header.addWidget(sec1_title)
-        sec1_header.addStretch()
-        sec1_header.addWidget(btn_refresh)
-        routing_vbox.addLayout(sec1_header)
+        head_row1.addWidget(btn_refresh)
+        c1_v.addLayout(head_row1)
 
-        # Desktop Sound Source
-        lbl_desktop = QLabel("1. Desktop Audio Source (What you hear in headphones):")
         self.combo_desktop = NoWheelComboBox()
         self.combo_desktop.currentIndexChanged.connect(self._on_device_selection_changed)
-        routing_vbox.addWidget(lbl_desktop)
-        routing_vbox.addWidget(self.combo_desktop)
+        c1_v.addWidget(self.combo_desktop)
 
-        # Virtual Mic Target
-        lbl_target = QLabel("2. Target Virtual Microphone (Sends to Discord):")
-        self.combo_target = NoWheelComboBox()
-        self.combo_target.currentIndexChanged.connect(self._on_target_mic_changed)
-        routing_vbox.addWidget(lbl_target)
-        routing_vbox.addWidget(self.combo_target)
+        s1_row = QHBoxLayout()
+        s1_row.setSpacing(8)
+        s1_lbl = QLabel("Volume:")
+        s1_lbl.setStyleSheet("color: #949ba4; font-size: 12px; font-weight: bold;")
+        s1_row.addWidget(s1_lbl)
 
-        # Discord Hint Badge
-        self.lbl_discord_hint = QLabel("ℹ️ In Discord: Select this device as your Input Device")
-        self.lbl_discord_hint.setStyleSheet("""
-            background-color: #1e1f22;
-            color: #5865f2;
-            padding: 8px 12px;
-            border-radius: 6px;
-            border: 1px dashed #5865f2;
-            font-size: 12px;
-            font-weight: 500;
-        """)
-        self.lbl_discord_hint.setWordWrap(True)
-        routing_vbox.addWidget(self.lbl_discord_hint)
-
-        content_vbox.addWidget(routing_card)
-
-        # ----------------- CARD 2: AUDIO MIXING & VOLUMES -----------------
-        mix_card = QFrame()
-        mix_card.setProperty("class", "card")
-        mix_vbox = QVBoxLayout(mix_card)
-        mix_vbox.setSpacing(12)
-
-        sec2_title = QLabel("🎚️ Audio Levels & Microphone Mixing")
-        sec2_title.setProperty("class", "sectionHeading")
-        mix_vbox.addWidget(sec2_title)
-
-        # --- Desktop Sound Control ---
-        desktop_row = QHBoxLayout()
-        desktop_lbl = QLabel("Desktop Audio:")
-        desktop_lbl.setFixedWidth(110)
-        self.slider_desktop_vol = NoWheelSlider(Qt.Horizontal)
+        self.slider_desktop_vol = GradientSlider()
         self.slider_desktop_vol.setRange(0, 200)
         self.slider_desktop_vol.setValue(100)
         self.slider_desktop_vol.valueChanged.connect(self._on_desktop_vol_changed)
+        s1_row.addWidget(self.slider_desktop_vol, 1)
 
         self.lbl_desktop_vol_val = QLabel("100%")
-        self.lbl_desktop_vol_val.setFixedWidth(45)
+        self.lbl_desktop_vol_val.setFixedWidth(44)
+        self.lbl_desktop_vol_val.setAlignment(Qt.AlignCenter)
+        self.lbl_desktop_vol_val.setStyleSheet("color: #23a55a; font-weight: bold; font-size: 12px;")
+        s1_row.addWidget(self.lbl_desktop_vol_val)
 
         self.btn_desktop_mute = QPushButton("Mute")
         self.btn_desktop_mute.setCheckable(True)
+        self.btn_desktop_mute.setFixedWidth(60)
         self.btn_desktop_mute.setProperty("class", "muteBtn")
         self.btn_desktop_mute.clicked.connect(self._on_desktop_mute_clicked)
+        s1_row.addWidget(self.btn_desktop_mute)
+        c1_v.addLayout(s1_row)
 
-        desktop_row.addWidget(desktop_lbl)
-        desktop_row.addWidget(self.slider_desktop_vol)
-        desktop_row.addWidget(self.lbl_desktop_vol_val)
-        desktop_row.addWidget(self.btn_desktop_mute)
-        mix_vbox.addLayout(desktop_row)
-
+        vu1_row = QHBoxLayout()
+        vu1_row.setSpacing(8)
+        vu1_lbl = QLabel("Signal:")
+        vu1_lbl.setStyleSheet("color: #949ba4; font-size: 11px; font-weight: bold;")
+        vu1_lbl.setFixedWidth(s1_lbl.sizeHint().width())
+        vu1_row.addWidget(vu1_lbl)
         self.meter_desktop = VUMeter()
-        mix_vbox.addWidget(self.meter_desktop)
+        vu1_row.addWidget(self.meter_desktop, 1)
+        c1_v.addLayout(vu1_row)
 
-        # Separator line
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("background-color: #35373c; max-height: 1px;")
-        mix_vbox.addWidget(sep)
+        left_col.addWidget(c1)
 
-        # --- Obvious Toggle Switch for Voice Mixing ---
-        self.switch_mix_mic = ToggleSwitch("Include My Voice (Mix Headset Microphone into Stream)")
+        # Card 2: Voice Mic Channel
+        c2 = QFrame()
+        c2.setProperty("class", "card")
+        c2_v = QVBoxLayout(c2)
+        c2_v.setContentsMargins(14, 12, 14, 12)
+        c2_v.setSpacing(8)
+
+        c2_top = QHBoxLayout()
+        t2 = QLabel("2. Voice Microphone (Optional)")
+        t2.setProperty("class", "sectionHeading")
+        c2_top.addWidget(t2)
+        c2_top.addStretch()
+
+        self.switch_mix_mic = ToggleSwitch("Include Voice")
+        self.switch_mix_mic.setChecked(False)
         self.switch_mix_mic.toggled.connect(self._on_mix_mic_toggled)
-        mix_vbox.addWidget(self.switch_mix_mic)
-
-        self.mic_container = QWidget()
-        mic_vbox = QVBoxLayout(self.mic_container)
-        mic_vbox.setContentsMargins(0, 0, 0, 0)
-        mic_vbox.setSpacing(8)
+        c2_top.addWidget(self.switch_mix_mic)
+        c2_v.addLayout(c2_top)
 
         self.combo_real_mic = NoWheelComboBox()
         self.combo_real_mic.currentIndexChanged.connect(self._on_device_selection_changed)
-        mic_vbox.addWidget(self.combo_real_mic)
+        self.combo_real_mic.setEnabled(False)
+        c2_v.addWidget(self.combo_real_mic)
 
-        mic_row = QHBoxLayout()
-        mic_lbl = QLabel("Voice Volume:")
-        mic_lbl.setFixedWidth(110)
+        s2_row = QHBoxLayout()
+        s2_row.setSpacing(8)
+        s2_lbl = QLabel("Volume:")
+        s2_lbl.setStyleSheet("color: #949ba4; font-size: 12px; font-weight: bold;")
+        s2_row.addWidget(s2_lbl)
 
-        self.slider_mic_vol = NoWheelSlider(Qt.Horizontal)
+        self.slider_mic_vol = GradientSlider()
         self.slider_mic_vol.setRange(0, 200)
         self.slider_mic_vol.setValue(100)
+        self.slider_mic_vol.setEnabled(False)
         self.slider_mic_vol.valueChanged.connect(self._on_mic_vol_changed)
+        s2_row.addWidget(self.slider_mic_vol, 1)
 
         self.lbl_mic_vol_val = QLabel("100%")
-        self.lbl_mic_vol_val.setFixedWidth(45)
+        self.lbl_mic_vol_val.setFixedWidth(44)
+        self.lbl_mic_vol_val.setAlignment(Qt.AlignCenter)
+        self.lbl_mic_vol_val.setStyleSheet("color: #23a55a; font-weight: bold; font-size: 12px;")
+        s2_row.addWidget(self.lbl_mic_vol_val)
 
         self.btn_mic_mute = QPushButton("Mute")
         self.btn_mic_mute.setCheckable(True)
+        self.btn_mic_mute.setFixedWidth(60)
+        self.btn_mic_mute.setEnabled(False)
         self.btn_mic_mute.setProperty("class", "muteBtn")
         self.btn_mic_mute.clicked.connect(self._on_mic_mute_clicked)
+        s2_row.addWidget(self.btn_mic_mute)
+        c2_v.addLayout(s2_row)
 
-        mic_row.addWidget(mic_lbl)
-        mic_row.addWidget(self.slider_mic_vol)
-        mic_row.addWidget(self.lbl_mic_vol_val)
-        mic_row.addWidget(self.btn_mic_mute)
-        mic_vbox.addLayout(mic_row)
-
+        vu2_row = QHBoxLayout()
+        vu2_row.setSpacing(8)
+        vu2_lbl = QLabel("Signal:")
+        vu2_lbl.setStyleSheet("color: #949ba4; font-size: 11px; font-weight: bold;")
+        vu2_lbl.setFixedWidth(s2_lbl.sizeHint().width())
+        vu2_row.addWidget(vu2_lbl)
         self.meter_mic = VUMeter()
-        mic_vbox.addWidget(self.meter_mic)
+        vu2_row.addWidget(self.meter_mic, 1)
+        c2_v.addLayout(vu2_row)
 
-        mix_vbox.addWidget(self.mic_container)
-        self.mic_container.setEnabled(False)
+        left_col.addWidget(c2)
+        grid.addLayout(left_col, 5)
 
-        # Separator line
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("background-color: #35373c; max-height: 1px;")
-        mix_vbox.addWidget(sep2)
+        # === RIGHT COLUMN: OUTPUT ROUTING & HUBS ===
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
 
-        # --- Master Output VU ---
-        master_row = QHBoxLayout()
-        master_lbl = QLabel("Discord Output Signal:")
-        master_lbl.setStyleSheet("color: #949ba4; font-size: 12px; font-weight: bold;")
-        master_row.addWidget(master_lbl)
-        master_row.addStretch()
-        mix_vbox.addLayout(master_row)
+        # Card 3: Target Virtual Mic & Output Signal
+        c3 = QFrame()
+        c3.setProperty("class", "card")
+        c3_v = QVBoxLayout(c3)
+        c3_v.setContentsMargins(14, 12, 14, 12)
+        c3_v.setSpacing(8)
 
-        self.meter_out = VUMeter()
-        mix_vbox.addWidget(self.meter_out)
+        t3 = QLabel("3. Target Virtual Microphone (Discord Output)")
+        t3.setProperty("class", "sectionHeading")
+        c3_v.addWidget(t3)
 
-        content_vbox.addWidget(mix_card)
+        t3_row = QHBoxLayout()
+        self.combo_target = NoWheelComboBox()
+        self.combo_target.currentIndexChanged.connect(self._on_target_mic_changed)
+        t3_row.addWidget(self.combo_target, 1)
 
-        # ----------------- CARD 3: DISCORD SETUP GUIDE -----------------
-        guide_card = QFrame()
-        guide_card.setProperty("class", "card")
-        guide_vbox = QVBoxLayout(guide_card)
-        guide_vbox.setSpacing(10)
-
-        guide_title = QLabel("📖 Discord Setup (Quick & Easy)")
-        guide_title.setProperty("class", "sectionHeading")
-        guide_vbox.addWidget(guide_title)
-
-        instructions = QLabel(
-            "1. Open Discord and go to <b>User Settings ⚙️ > Voice & Video</b>.<br>"
-            "2. Under <b>Input Device</b>, choose the device name shown in the blue hint box above (e.g. <i>CABLE Output</i>, <i>Sonar - Microphone</i>, or your chosen virtual mic).<br>"
-            "3. Set <b>Input Profile</b> (or Audio Profile) to <b>Studio</b>.<br>"
-            "<font color='#23a55a'><b>✨ That's it!</b></font> Studio profile transmits full-fidelity uncompressed stereo audio without voice filters cutting out game sounds or music."
-        )
-        instructions.setWordWrap(True)
-        instructions.setStyleSheet("color: #dbdee1; line-height: 1.5; font-size: 13px;")
-        guide_vbox.addWidget(instructions)
-
-        content_vbox.addWidget(guide_card)
-
-        # ----------------- CARD 4: WINDOWS SYSTEM INPUT SOURCE -----------------
-        win_card = QFrame()
-        win_card.setProperty("class", "card")
-        win_vbox = QVBoxLayout(win_card)
-        win_vbox.setSpacing(10)
-
-        win_title = QLabel("🌐 Windows System Input Source")
-        win_title.setProperty("class", "sectionHeading")
-        win_vbox.addWidget(win_title)
-
-        self.lbl_win_default_status = QLabel("Current Windows Default Input: Checking...")
-        self.lbl_win_default_status.setStyleSheet("color: #949ba4; font-size: 12px; font-weight: 500;")
-        self.lbl_win_default_status.setWordWrap(True)
-        win_vbox.addWidget(self.lbl_win_default_status)
-
-        win_btns_row = QHBoxLayout()
-        btn_set_win_default = QPushButton("Set Virtual Mic as Windows Default Input")
-        btn_set_win_default.setCursor(Qt.PointingHandCursor)
-        btn_set_win_default.setToolTip("Makes any app across Windows receive desktop audio as its microphone")
-        btn_set_win_default.clicked.connect(self._set_virtual_mic_as_windows_default)
-
-        btn_restore_win_default = QPushButton("Restore Headset Mic as Default")
-        btn_restore_win_default.setCursor(Qt.PointingHandCursor)
-        btn_restore_win_default.clicked.connect(self._restore_headset_mic_as_windows_default)
-
-        win_btns_row.addWidget(btn_set_win_default)
-        win_btns_row.addWidget(btn_restore_win_default)
-        win_vbox.addLayout(win_btns_row)
-
-        tools_row = QHBoxLayout()
-        btn_open_sound_cp = QPushButton("⚙️ Open Windows Sound Settings")
-        btn_open_sound_cp.setCursor(Qt.PointingHandCursor)
-        btn_open_sound_cp.clicked.connect(self._open_sound_control_panel)
-
-        self.btn_install_vbcable = QPushButton("📥 Install Dedicated VB-Cable Driver")
+        self.btn_install_vbcable = QPushButton("Install VB-Cable")
         self.btn_install_vbcable.setCursor(Qt.PointingHandCursor)
+        self.btn_install_vbcable.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 6px 10px; border-radius: 4px;")
         self.btn_install_vbcable.clicked.connect(self._install_vbcable_driver)
+        t3_row.addWidget(self.btn_install_vbcable)
+        c3_v.addLayout(t3_row)
 
-        tools_row.addWidget(btn_open_sound_cp)
-        tools_row.addWidget(self.btn_install_vbcable)
-        win_vbox.addLayout(tools_row)
+        self.lbl_discord_hint = QLabel("Select this device in Discord Voice Settings")
+        self.lbl_discord_hint.setStyleSheet("""
+            background-color: #2b3d5b;
+            color: #5865f2;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        self.lbl_discord_hint.setWordWrap(True)
+        c3_v.addWidget(self.lbl_discord_hint)
 
-        self.lbl_install_status = QLabel("")
-        self.lbl_install_status.setStyleSheet("color: #23a55a; font-size: 12px;")
-        win_vbox.addWidget(self.lbl_install_status)
+        out_lbl = QLabel("Master Discord Output Signal:")
+        out_lbl.setStyleSheet("color: #949ba4; font-size: 11px; font-weight: bold;")
+        c3_v.addWidget(out_lbl)
+        self.meter_out = VUMeter()
+        c3_v.addWidget(self.meter_out)
 
-        content_vbox.addWidget(win_card)
+        right_col.addWidget(c3)
 
-        # ----------------- CARD 5: PRO AUDIO VISUALIZER GRAPH -----------------
+        # Mini Cards: Discord Setup & Windows Input Side-by-Side
+        hubs_row = QHBoxLayout()
+        hubs_row.setSpacing(10)
+
+        # Discord Mini Card
+        cd = QFrame()
+        cd.setProperty("class", "card")
+        cd_v = QVBoxLayout(cd)
+        cd_v.setContentsMargins(12, 10, 12, 10)
+        cd_v.setSpacing(5)
+        cdt = QLabel("📖 Discord Setup")
+        cdt.setStyleSheet("font-size: 12px; font-weight: bold; color: #f2f3f5;")
+        cd_v.addWidget(cdt)
+        cd_info = QLabel("1. Set <b>Input Device</b> to Target Mic<br>2. Set <b>Input Profile</b> to <b>Studio ✨</b>")
+        cd_info.setStyleSheet("color: #dbdee1; font-size: 11px; line-height: 1.4;")
+        cd_v.addWidget(cd_info)
+        hubs_row.addWidget(cd, 1)
+
+        # Windows Input Mini Card
+        cw = QFrame()
+        cw.setProperty("class", "card")
+        cw_v = QVBoxLayout(cw)
+        cw_v.setContentsMargins(12, 10, 12, 10)
+        cw_v.setSpacing(5)
+        cwt = QLabel("🌐 Windows Input")
+        cwt.setStyleSheet("font-size: 12px; font-weight: bold; color: #f2f3f5;")
+        cw_v.addWidget(cwt)
+
+        self.lbl_win_default_status = QLabel("Default: Checking...")
+        self.lbl_win_default_status.setStyleSheet("color: #949ba4; font-size: 11px;")
+        self.lbl_win_default_status.setWordWrap(True)
+        cw_v.addWidget(self.lbl_win_default_status)
+
+        cw_btns = QHBoxLayout()
+        cw_btns.setSpacing(6)
+        btn_win = QPushButton("Set Default")
+        btn_win.setCursor(Qt.PointingHandCursor)
+        btn_win.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 4px 6px; border-radius: 4px;")
+        btn_win.clicked.connect(self._set_virtual_mic_as_windows_default)
+
+        btn_rst = QPushButton("Restore")
+        btn_rst.setCursor(Qt.PointingHandCursor)
+        btn_rst.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 4px 6px; border-radius: 4px;")
+        btn_rst.clicked.connect(self._restore_headset_mic_as_windows_default)
+
+        btn_cp = QPushButton("⚙️")
+        btn_cp.setCursor(Qt.PointingHandCursor)
+        btn_cp.setToolTip("Open Windows Sound Settings")
+        btn_cp.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 4px 6px; border-radius: 4px;")
+        btn_cp.clicked.connect(self._open_sound_control_panel)
+
+        cw_btns.addWidget(btn_win)
+        cw_btns.addWidget(btn_rst)
+        cw_btns.addWidget(btn_cp)
+        cw_v.addLayout(cw_btns)
+        hubs_row.addWidget(cw, 1)
+
+        right_col.addLayout(hubs_row)
+        grid.addLayout(right_col, 5)
+
+        root.addLayout(grid)
+
+        # ----------------- 3. FULL-WIDTH LIVE AUDIO VISUALIZER DOCK -----------------
         vis_card = QFrame()
         vis_card.setProperty("class", "card")
-        vis_vbox = QVBoxLayout(vis_card)
-        vis_vbox.setSpacing(8)
+        vl = QVBoxLayout(vis_card)
+        vl.setContentsMargins(14, 10, 14, 10)
+        vl.setSpacing(6)
 
-        vis_header = QVBoxLayout()
-        vis_header.setSpacing(2)
-        vis_title = QLabel("📊 Live Desktop Audio Graph")
-        vis_title.setProperty("class", "sectionHeading")
-        vis_sub = QLabel("Real-time Frequency Spectrum & Oscilloscope Waveform")
-        vis_sub.setProperty("class", "subtitle")
-        vis_sub.setWordWrap(True)
-        vis_header.addWidget(vis_title)
-        vis_header.addWidget(vis_sub)
-        vis_vbox.addLayout(vis_header)
+        vh_row = QHBoxLayout()
+        vh_title = QLabel("📊 Real-Time Audio Visualizer & Frequency Spectrum")
+        vh_title.setProperty("class", "sectionHeading")
+        vh_row.addWidget(vh_title)
+        vh_row.addStretch()
+
+        self.lbl_vis_db = QLabel("OFFLINE")
+        self.lbl_vis_db.setStyleSheet("color: #23a55a; font-weight: bold; font-size: 12px; background: #1e1f22; padding: 2px 8px; border-radius: 4px;")
+        vh_row.addWidget(self.lbl_vis_db)
+        vl.addLayout(vh_row)
 
         self.visualizer = ProAudioVisualizer()
-        vis_vbox.addWidget(self.visualizer)
+        self.visualizer.setFixedHeight(125)
+        vl.addWidget(self.visualizer)
 
-        content_vbox.addWidget(vis_card)
+        root.addWidget(vis_card)
 
-        # ----------------- FOOTER OPTIONS -----------------
-        footer_layout = QHBoxLayout()
+        # ----------------- 4. FOOTER OPTIONS -----------------
+        foot = QHBoxLayout()
+        foot.setContentsMargins(4, 0, 4, 0)
         self.switch_tray = ToggleSwitch("Minimize to System Tray on close")
         self.switch_tray.setChecked(self.config.get("minimize_to_tray", False))
         self.switch_tray.toggled.connect(self._save_current_config)
-        footer_layout.addWidget(self.switch_tray)
-        footer_layout.addStretch()
+        foot.addWidget(self.switch_tray)
 
-        content_vbox.addLayout(footer_layout)
+        self.lbl_install_status = QLabel("")
+        self.lbl_install_status.setStyleSheet("color: #23a55a; font-size: 11px; font-weight: bold; margin-left: 12px;")
+        foot.addWidget(self.lbl_install_status)
 
-        scroll_area.setWidget(content_widget)
-        main_vbox.addWidget(scroll_area)
+        foot.addStretch()
+        foot_hint = QLabel("Everything visible in one view • No scrolling needed")
+        foot_hint.setStyleSheet("color: #949ba4; font-size: 11px;")
+        foot.addWidget(foot_hint)
+        root.addLayout(foot)
 
     def _init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -1119,7 +1246,9 @@ class MainWindow(QMainWindow):
 
         mix_enabled = self.config.get("mix_mic_enabled", False)
         self.switch_mix_mic.setChecked(mix_enabled)
-        self.mic_container.setEnabled(mix_enabled)
+        self.combo_real_mic.setEnabled(mix_enabled)
+        self.slider_mic_vol.setEnabled(mix_enabled)
+        self.btn_mic_mute.setEnabled(mix_enabled)
 
     def _save_current_config(self):
         cur_desk = self.combo_desktop.currentText()
@@ -1143,31 +1272,27 @@ class MainWindow(QMainWindow):
         if target_data:
             discord_name = target_data.get("discord_name", target_data["name"])
             self.lbl_discord_hint.setText(
-                f"ℹ️ <b>In Discord:</b> Go to User Settings > Voice & Video and select: <b>{discord_name}</b> as your Input Device."
+                f"ℹ️ <b>In Discord:</b> Select <b>{discord_name}</b> as your Input Device (Profile: <b>Studio ✨</b>)"
             )
             self.lbl_discord_hint.setStyleSheet("""
-                background-color: #1e1f22;
+                background-color: #2b3d5b;
                 color: #5865f2;
-                padding: 8px 12px;
+                padding: 6px 10px;
                 border-radius: 6px;
-                border: 1px dashed #5865f2;
-                font-size: 12px;
-                font-weight: 500;
+                font-size: 11px;
+                font-weight: bold;
             """)
         else:
             self.lbl_discord_hint.setText(
-                "⚠️ <b>No virtual audio device selected.</b><br>"
-                "Windows needs a virtual cable to route desktop sound into Discord as a microphone.<br>"
-                "Scroll down and click <b>'📥 Install Dedicated VB-Cable Driver'</b> to install it in 10 seconds!"
+                "⚠️ <b>No virtual audio device selected.</b> Click <b>'Install VB-Cable'</b> above to install in 10 seconds!"
             )
             self.lbl_discord_hint.setStyleSheet("""
                 background-color: #2b2314;
                 color: #f0b232;
-                padding: 8px 12px;
+                padding: 6px 10px;
                 border-radius: 6px;
-                border: 1px dashed #f0b232;
-                font-size: 12px;
-                font-weight: 500;
+                font-size: 11px;
+                font-weight: bold;
             """)
         self._on_device_selection_changed()
 
@@ -1178,6 +1303,8 @@ class MainWindow(QMainWindow):
 
     def _on_desktop_vol_changed(self, val):
         self.lbl_desktop_vol_val.setText(f"{val}%")
+        color = "#23a55a" if val <= 100 else "#f0b232" if val <= 150 else "#f23f43"
+        self.lbl_desktop_vol_val.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 12px;")
         self.engine.set_desktop_volume(val / 100.0)
         self._save_current_config()
 
@@ -1187,13 +1314,17 @@ class MainWindow(QMainWindow):
         self._save_current_config()
 
     def _on_mix_mic_toggled(self, checked):
-        self.mic_container.setEnabled(checked)
+        self.combo_real_mic.setEnabled(checked)
+        self.slider_mic_vol.setEnabled(checked)
+        self.btn_mic_mute.setEnabled(checked)
         self._save_current_config()
         if self.engine.is_running():
             self._start_stream()
 
     def _on_mic_vol_changed(self, val):
         self.lbl_mic_vol_val.setText(f"{val}%")
+        color = "#23a55a" if val <= 100 else "#f0b232" if val <= 150 else "#f23f43"
+        self.lbl_mic_vol_val.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 12px;")
         self.engine.set_mic_volume(val / 100.0)
         self._save_current_config()
 
@@ -1294,8 +1425,13 @@ class MainWindow(QMainWindow):
             # Update live visualizer with latest audio buffer
             samples = self.engine.get_latest_samples()
             self.visualizer.update_audio(samples)
+            if hasattr(self, 'lbl_vis_db'):
+                db = self.visualizer.current_db
+                self.lbl_vis_db.setText(f"{db:.1f} dB" if db > -58.0 else "SILENT")
         else:
             self.visualizer.update_audio(None)
+            if hasattr(self, 'lbl_vis_db'):
+                self.lbl_vis_db.setText("OFFLINE")
 
     def _refresh_windows_default_input_label(self):
         def_name = get_windows_default_input_name()
