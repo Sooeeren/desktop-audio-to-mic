@@ -39,8 +39,8 @@ Stream your desktop audio (music, YouTube, game sounds, browser audio) directly 
 ### Option 2: Run from Source
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Sooeeren/desktop-mic-converter.git
-   cd desktop-mic-converter
+   git clone https://github.com/Sooeeren/desktop-audio-to-mic.git
+   cd desktop-audio-to-mic
    ```
 2. Install dependencies:
    ```bash
@@ -90,7 +90,7 @@ Want other Windows applications (browsers, OBS, Zoom, Windows Sound Recorder) to
 ## 📁 File Structure
 
 ```text
-desktop-mic-converter/
+desktop-audio-to-mic/
 ├── src/
 │   ├── audio/
 │   │   └── audio_engine.py       # WASAPI loopback capture, resampling, keep-alive, queues
