@@ -241,7 +241,7 @@ def load_config():
         "mic_volume": 1.0,
         "desktop_muted": False,
         "mic_muted": False,
-        "minimize_to_tray": True,
+        "minimize_to_tray": False,
         "auto_start": False
     }
     if os.path.exists(CONFIG_FILE):

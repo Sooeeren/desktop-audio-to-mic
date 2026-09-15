@@ -852,7 +852,7 @@ class MainWindow(QMainWindow):
         # ----------------- FOOTER OPTIONS -----------------
         footer_layout = QHBoxLayout()
         self.switch_tray = ToggleSwitch("Minimize to System Tray on close")
-        self.switch_tray.setChecked(self.config.get("minimize_to_tray", True))
+        self.switch_tray.setChecked(self.config.get("minimize_to_tray", False))
         self.switch_tray.toggled.connect(self._save_current_config)
         footer_layout.addWidget(self.switch_tray)
         footer_layout.addStretch()
