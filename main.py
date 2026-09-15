@@ -14,6 +14,7 @@ if ROOT_DIR not in sys.path:
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt
 from src.ui.gui import MainWindow
+from src.ui.splash import ModernSplashScreen
 
 
 def excepthook(exc_type, exc_value, exc_tb):
@@ -60,8 +61,19 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    window = MainWindow()
-    window.show()
+    splash = ModernSplashScreen()
+    splash.show()
+    app.processEvents()
+
+    # Close PyInstaller native bootloader splash once Qt splash is displayed
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
+
+    window = MainWindow(splash=splash)
+    splash.finish(window)
 
     sys.exit(app.exec())
 

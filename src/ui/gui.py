@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QSlider, QFrame,
     QProgressBar, QSystemTrayIcon, QMenu, QScrollArea,
-    QMessageBox
+    QMessageBox, QDialog
 )
 
 try:
@@ -517,29 +517,157 @@ class ProAudioVisualizer(QWidget):
             painter.end()
 
 
+class DriverInstallDialog(QDialog):
+    """
+    Modern Discord-styled modal dialog showing live installation status
+    for the VB-Audio Virtual Cable driver.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Installing Virtual Audio Cable")
+        self.setFixedSize(460, 230)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1f22;
+                color: #f2f3f5;
+                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        icon = QLabel("📦")
+        icon.setStyleSheet("font-size: 32px; background: transparent;")
+        header.addWidget(icon)
+
+        title_box = QVBoxLayout()
+        t = QLabel("Installing Virtual Audio Cable")
+        t.setStyleSheet("font-size: 16px; font-weight: bold; color: #f2f3f5; background: transparent;")
+        title_box.addWidget(t)
+        sub = QLabel("Setting up VB-Audio Virtual Cable driver for Windows...")
+        sub.setStyleSheet("font-size: 12px; color: #949ba4; background: transparent;")
+        title_box.addWidget(sub)
+        header.addLayout(title_box)
+        header.addStretch()
+        layout.addLayout(header)
+
+        layout.addSpacing(6)
+
+        self.prog_bar = QProgressBar()
+        self.prog_bar.setFixedHeight(8)
+        self.prog_bar.setRange(0, 0)  # Animated indeterminate pulse
+        self.prog_bar.setTextVisible(False)
+        self.prog_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: #2b2d31;
+                border-radius: 4px;
+                border: none;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5865f2, stop:1 #23a55a);
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(self.prog_bar)
+
+        self.lbl_status = QLabel("Initializing download...")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setStyleSheet("color: #dbdee1; font-size: 12px; background: transparent;")
+        layout.addWidget(self.lbl_status)
+
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.btn_close = QPushButton("Cancel")
+        self.btn_close.setStyleSheet("""
+            QPushButton {
+                background-color: #35373c;
+                color: #f2f3f5;
+                font-weight: bold;
+                border-radius: 4px;
+                padding: 7px 18px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #404249;
+            }
+        """)
+        self.btn_close.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+
+    def set_status(self, message: str, finished: bool = False, success: bool = True):
+        self.lbl_status.setText(message)
+        if finished:
+            self.prog_bar.setRange(0, 100)
+            self.prog_bar.setValue(100 if success else 0)
+            self.btn_close.setText("Close")
+            self.btn_close.setStyleSheet("""
+                QPushButton {
+                    background-color: #5865f2;
+                    color: #ffffff;
+                    font-weight: bold;
+                    border-radius: 4px;
+                    padding: 7px 22px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #4752c4;
+                }
+            """)
+            try:
+                self.btn_close.clicked.disconnect()
+            except Exception:
+                pass
+            self.btn_close.clicked.connect(self.accept)
+
+
 class SignalBridge(QObject):
     error_signal = Signal(str)
     driver_status_signal = Signal(str)
+    driver_finished_signal = Signal(bool, str)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, splash=None):
         super().__init__()
+        self.splash = splash
         self.setWindowTitle("Discord Desktop Audio Mic")
         self.resize(650, 880)
         self.setMinimumWidth(520)
 
+        if self.splash:
+            self.splash.set_progress(25, "Initializing audio engine...")
+
         self.bridge = SignalBridge()
         self.bridge.error_signal.connect(self._show_error)
         self.bridge.driver_status_signal.connect(self._update_driver_status)
+        self.bridge.driver_finished_signal.connect(self._on_driver_finished)
 
         self.dm = DeviceManager()
         self.engine = AudioEngine(on_error=self.bridge.error_signal.emit)
         self.config = load_config()
 
+        if self.splash:
+            self.splash.set_progress(50, "Loading user interface...")
+
         self._init_ui()
         self._init_tray()
+
+        if self.splash:
+            self.splash.set_progress(75, "Scanning Windows audio endpoints...")
+
         self._load_devices()
+
+        if self.splash:
+            self.splash.set_progress(90, "Applying configuration...")
+
         self._apply_config()
         self._refresh_windows_default_input_label()
 
@@ -1222,23 +1350,42 @@ class MainWindow(QMainWindow):
 
     def _install_vbcable_driver(self):
         self.btn_install_vbcable.setEnabled(False)
-        self.lbl_install_status.setText("Downloading VB-Audio Virtual Cable...")
+        self.lbl_install_status.setText("Opening installation dialog...")
+
+        dialog = DriverInstallDialog(self)
+        self.driver_dialog = dialog
 
         def worker():
             def cb(status):
                 self.bridge.driver_status_signal.emit(status)
+
             ok = virtual_driver.install_vbcable(progress_callback=cb)
             if ok:
-                self.bridge.driver_status_signal.emit("VB-Cable installer launched! Refresh devices after installing.")
+                self.bridge.driver_finished_signal.emit(
+                    True,
+                    "VB-Cable installer launched! Complete the Windows setup wizard, then refresh devices or restart the app."
+                )
             else:
-                self.bridge.driver_status_signal.emit("VB-Cable installation could not be completed.")
+                self.bridge.driver_finished_signal.emit(
+                    False,
+                    "VB-Cable download or installation could not be completed."
+                )
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
 
+        dialog.exec()
+
     def _update_driver_status(self, msg):
         self.lbl_install_status.setText(msg)
+        if hasattr(self, 'driver_dialog') and self.driver_dialog and self.driver_dialog.isVisible():
+            self.driver_dialog.set_status(msg)
+
+    def _on_driver_finished(self, success, msg):
+        self.lbl_install_status.setText(msg)
         self.btn_install_vbcable.setEnabled(True)
+        if hasattr(self, 'driver_dialog') and self.driver_dialog and self.driver_dialog.isVisible():
+            self.driver_dialog.set_status(msg, finished=True, success=success)
         self._load_devices()
 
     def _show_error(self, msg):
