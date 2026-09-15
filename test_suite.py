@@ -3,11 +3,17 @@ Automated Test Suite for Discord Desktop Audio Mic
 Verifies device discovery, audio pipeline, and GUI instantiation.
 """
 
+import os
 import sys
 import time
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from PySide6.QtWidgets import QApplication
-from device_manager import DeviceManager, load_config, save_config
-from audio_engine import AudioEngine, resample_audio, adjust_channels
+from src.devices.device_manager import DeviceManager, load_config, save_config
+from src.audio.audio_engine import AudioEngine, resample_audio, adjust_channels
 import numpy as np
 
 
@@ -70,7 +76,7 @@ def test_streaming_pipeline():
 def test_gui_initialization():
     print("Testing GUI initialization...")
     app = QApplication.instance() or QApplication(sys.argv)
-    from gui import MainWindow
+    from src.ui.gui import MainWindow
     window = MainWindow()
     assert window is not None, "Failed to instantiate MainWindow"
     assert window.combo_desktop.count() > 0, "Desktop combobox is empty"

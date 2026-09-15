@@ -24,12 +24,20 @@ from PySide6.QtWidgets import (
     QMessageBox
 )
 
-from device_manager import (
-    DeviceManager, load_config, save_config,
-    get_windows_default_input_name, set_windows_default_input_device
-)
-from audio_engine import AudioEngine
-import virtual_driver
+try:
+    from src.devices.device_manager import (
+        DeviceManager, load_config, save_config,
+        get_windows_default_input_name, set_windows_default_input_device
+    )
+    from src.audio.audio_engine import AudioEngine
+    from src.devices import virtual_driver
+except ImportError:
+    from device_manager import (
+        DeviceManager, load_config, save_config,
+        get_windows_default_input_name, set_windows_default_input_device
+    )
+    from audio_engine import AudioEngine
+    import virtual_driver
 
 
 DARK_STYLE = """
@@ -761,9 +769,9 @@ class MainWindow(QMainWindow):
 
         instructions = QLabel(
             "1. Open Discord and go to <b>User Settings ⚙️ > Voice & Video</b>.<br>"
-            "2. Set <b>Input Device</b> to the target virtual microphone.<br>"
-            "3. Change <b>Input Profile</b> (or Audio Profile) to <b>Studio</b>.<br>"
-            "<font color='#23a55a'><b>✨ That's it!</b></font> Studio mode transmits full-fidelity uncompressed sound without voice filters cutting out your music or games!"
+            "2. Under <b>Input Device</b>, choose the device name shown in the blue hint box above (e.g. <i>CABLE Output</i>, <i>Sonar - Microphone</i>, or your chosen virtual mic).<br>"
+            "3. Set <b>Input Profile</b> (or Audio Profile) to <b>Studio</b>.<br>"
+            "<font color='#23a55a'><b>✨ That's it!</b></font> Studio profile transmits full-fidelity uncompressed stereo audio without voice filters cutting out game sounds or music."
         )
         instructions.setWordWrap(True)
         instructions.setStyleSheet("color: #dbdee1; line-height: 1.5; font-size: 13px;")
@@ -925,8 +933,11 @@ class MainWindow(QMainWindow):
             self.combo_desktop.addItem(s["display_name"], s)
 
         target_mics = self.dm.get_target_microphones()
-        for t in target_mics:
-            self.combo_target.addItem(t["display_name"], t)
+        if not target_mics:
+            self.combo_target.addItem("⚠️ No Virtual Mic Found - Click 'Install VB-Cable' Below", None)
+        else:
+            for t in target_mics:
+                self.combo_target.addItem(t["display_name"], t)
 
         real_mics = self.dm.get_real_microphones()
         for m in real_mics:
@@ -1004,8 +1015,32 @@ class MainWindow(QMainWindow):
         if target_data:
             discord_name = target_data.get("discord_name", target_data["name"])
             self.lbl_discord_hint.setText(
-                f"ℹ️ <b>In Discord:</b> Go to Voice & Video and select: <b>{discord_name}</b> as your Input Device."
+                f"ℹ️ <b>In Discord:</b> Go to User Settings > Voice & Video and select: <b>{discord_name}</b> as your Input Device."
             )
+            self.lbl_discord_hint.setStyleSheet("""
+                background-color: #1e1f22;
+                color: #5865f2;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 1px dashed #5865f2;
+                font-size: 12px;
+                font-weight: 500;
+            """)
+        else:
+            self.lbl_discord_hint.setText(
+                "⚠️ <b>No virtual audio device selected.</b><br>"
+                "Windows needs a virtual cable to route desktop sound into Discord as a microphone.<br>"
+                "Scroll down and click <b>'📥 Install Dedicated VB-Cable Driver'</b> to install it in 10 seconds!"
+            )
+            self.lbl_discord_hint.setStyleSheet("""
+                background-color: #2b2314;
+                color: #f0b232;
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 1px dashed #f0b232;
+                font-size: 12px;
+                font-weight: 500;
+            """)
         self._on_device_selection_changed()
 
     def _on_device_selection_changed(self):

@@ -10,7 +10,8 @@ import sys
 import pyaudiowpatch as pyaudio
 
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+CONFIG_FILE = os.path.join(ROOT_DIR, "config.json")
 
 # Keywords that indicate a virtual microphone playback input
 VIRTUAL_CABLE_KEYWORDS = [
