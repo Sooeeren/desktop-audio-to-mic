@@ -1,0 +1,28 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+
+# Build outputs & PyInstaller
+build/
+dist/
+*.exe
+
+# Environments
+venv/
+.venv/
+env/
+
+# Logs & Diagnostics
+*.log
+crash.log
+
+# Scratch scripts
+scratch/
+
+# OS / IDE
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

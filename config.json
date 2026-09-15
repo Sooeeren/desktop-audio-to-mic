@@ -1,0 +1,12 @@
+{
+  "desktop_source_name": "SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device) (Windows Default)",
+  "target_mic_name": "SteelSeries Sonar - Microphone (Detected & Ready)",
+  "real_mic_name": "Microphone (2- Logitech PRO X Wireless Gaming Headset)",
+  "mix_mic_enabled": false,
+  "desktop_volume": 1.0,
+  "mic_volume": 1.0,
+  "desktop_muted": false,
+  "mic_muted": false,
+  "minimize_to_tray": false,
+  "auto_start": false
+}
