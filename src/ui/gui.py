@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 try:
     from src.devices.device_manager import (
         DeviceManager, load_config, save_config,
-        get_system_default_input_name, set_system_default_input_device,
         get_windows_default_input_name, set_windows_default_input_device
     )
     from src.audio.audio_engine import AudioEngine
@@ -35,7 +34,6 @@ try:
 except ImportError:
     from device_manager import (
         DeviceManager, load_config, save_config,
-        get_system_default_input_name, set_system_default_input_device,
         get_windows_default_input_name, set_windows_default_input_device
     )
     from audio_engine import AudioEngine
@@ -988,14 +986,9 @@ class MainWindow(QMainWindow):
         self.combo_target.currentIndexChanged.connect(self._on_target_mic_changed)
         t3_row.addWidget(self.combo_target, 1)
 
-        btn_driver_text = "Install VB-Cable" if sys.platform == "win32" else "Setup Virtual Mic"
-        self.btn_install_vbcable = QPushButton(btn_driver_text)
+        self.btn_install_vbcable = QPushButton("Install VB-Cable")
         self.btn_install_vbcable.setCursor(Qt.PointingHandCursor)
         self.btn_install_vbcable.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 6px 10px; border-radius: 4px;")
-        if sys.platform == "win32":
-            self.btn_install_vbcable.setToolTip("Download and install VB-Audio Virtual Cable driver")
-        else:
-            self.btn_install_vbcable.setToolTip("Create native PulseAudio / PipeWire virtual microphone")
         self.btn_install_vbcable.clicked.connect(self._install_vbcable_driver)
         t3_row.addWidget(self.btn_install_vbcable)
         c3_v.addLayout(t3_row)
@@ -1020,7 +1013,7 @@ class MainWindow(QMainWindow):
 
         right_col.addWidget(c3)
 
-        # Mini Cards: Discord Setup & System Input Side-by-Side
+        # Mini Cards: Discord Setup & Windows Input Side-by-Side
         hubs_row = QHBoxLayout()
         hubs_row.setSpacing(10)
 
@@ -1038,14 +1031,13 @@ class MainWindow(QMainWindow):
         cd_v.addWidget(cd_info)
         hubs_row.addWidget(cd, 1)
 
-        # System Input Mini Card
+        # Windows Input Mini Card
         cw = QFrame()
         cw.setProperty("class", "card")
         cw_v = QVBoxLayout(cw)
         cw_v.setContentsMargins(12, 10, 12, 10)
         cw_v.setSpacing(5)
-        cwt_title = "🌐 Windows Input" if sys.platform == "win32" else "🌐 System Input"
-        cwt = QLabel(cwt_title)
+        cwt = QLabel("🌐 Windows Input")
         cwt.setStyleSheet("font-size: 12px; font-weight: bold; color: #f2f3f5;")
         cw_v.addWidget(cwt)
 
@@ -1068,7 +1060,7 @@ class MainWindow(QMainWindow):
 
         btn_cp = QPushButton("⚙️")
         btn_cp.setCursor(Qt.PointingHandCursor)
-        btn_cp.setToolTip("Open Sound Settings")
+        btn_cp.setToolTip("Open Windows Sound Settings")
         btn_cp.setStyleSheet("background-color: #35373c; font-size: 11px; padding: 4px 6px; border-radius: 4px;")
         btn_cp.clicked.connect(self._open_sound_control_panel)
 
@@ -1442,94 +1434,57 @@ class MainWindow(QMainWindow):
                 self.lbl_vis_db.setText("OFFLINE")
 
     def _refresh_windows_default_input_label(self):
-        def_name = get_system_default_input_name()
-        os_label = "Windows" if sys.platform == "win32" else "System"
-        self.lbl_win_default_status.setText(f"Current {os_label} Default: <b>{def_name}</b>")
+        def_name = get_windows_default_input_name()
+        self.lbl_win_default_status.setText(f"Current Windows Default Input: <b>{def_name}</b>")
 
     def _set_virtual_mic_as_windows_default(self):
         target_data = self.combo_target.currentData()
         if not target_data:
             return
+        # Match substring e.g. "Sonar - Microphone" or "CABLE Output"
         target_name = target_data["name"]
-        if sys.platform == "win32":
-            search_key = "Sonar - Microphone" if "sonar" in target_name.lower() else "CABLE Output" if "cable" in target_name.lower() else target_name
-        else:
-            search_key = "DiscordVirtualMic" if "discord" in target_name.lower() else target_name
+        search_key = "Sonar - Microphone" if "sonar" in target_name.lower() else "CABLE Output" if "cable" in target_name.lower() else target_name
 
-        ok = set_system_default_input_device(search_key)
+        ok = set_windows_default_input_device(search_key)
         self._refresh_windows_default_input_label()
-        os_label = "Windows" if sys.platform == "win32" else "System"
         if ok:
             QMessageBox.information(
-                self, f"{os_label} Input Source",
-                f"Successfully set '{search_key}' as your {os_label.lower()} default input device!\n\n"
-                f"Any application across your system will now receive your desktop audio stream."
+                self, "Windows Input Source",
+                f"Successfully set '{search_key}' as your Windows default input device!\n\n"
+                "Any application in Windows will now receive your desktop audio stream."
             )
         else:
             QMessageBox.warning(
-                self, f"{os_label} Input Source",
+                self, "Windows Input Source",
                 f"Could not automatically switch endpoint for '{search_key}'.\n"
-                f"You can select it manually in your sound settings."
+                "You can select it manually in Windows Sound Settings."
             )
 
     def _restore_headset_mic_as_windows_default(self):
         real_mic_data = self.combo_real_mic.currentData()
         if not real_mic_data:
-            search_key = "Microphone" if sys.platform == "win32" else ""
+            search_key = "Microphone"
         else:
             search_key = real_mic_data["name"]
 
-        ok = set_system_default_input_device(search_key)
+        ok = set_windows_default_input_device(search_key)
         self._refresh_windows_default_input_label()
-        os_label = "Windows" if sys.platform == "win32" else "System"
         if ok:
             QMessageBox.information(
-                self, f"{os_label} Input Source",
-                f"Successfully restored '{search_key or 'Default Mic'}' as your default microphone."
+                self, "Windows Input Source",
+                f"Successfully restored '{search_key}' as your Windows default microphone."
             )
         else:
             self._open_sound_control_panel()
 
     def _open_sound_control_panel(self):
         try:
-            if sys.platform == "win32":
-                os.system("start ms-settings:sound")
-                os.system("start mmsys.cpl 0 1")
-            else:
-                import shutil
-                import subprocess
-                opened = False
-                for cmd in ["pavucontrol", "gnome-control-center sound", "kcmshell6 kcm_pulseaudio", "systemsettings"]:
-                    parts = cmd.split()
-                    if shutil.which(parts[0]):
-                        subprocess.Popen(parts)
-                        opened = True
-                        break
-                if not opened:
-                    subprocess.Popen(["xdg-open", "settings"])
+            os.system("start ms-settings:sound")
+            os.system("start mmsys.cpl 0 1")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open sound settings: {e}")
 
     def _install_vbcable_driver(self):
-        if sys.platform != "win32":
-            self.btn_install_vbcable.setEnabled(False)
-            self.lbl_install_status.setText("Configuring Linux virtual microphone...")
-            ok = virtual_driver.create_linux_virtual_mic(progress_callback=self._update_driver_status)
-            self.btn_install_vbcable.setEnabled(True)
-            if ok:
-                QMessageBox.information(
-                    self, "Virtual Microphone Ready",
-                    "Virtual microphone 'Discord_Virtual_Microphone' is active in PulseAudio/PipeWire!\n\n"
-                    "Select it as your Input Device in Discord."
-                )
-            else:
-                QMessageBox.warning(
-                    self, "Virtual Microphone Setup",
-                    "Could not set up virtual mic. Ensure 'pactl' (pulseaudio-utils or pipewire-pulse) is installed."
-                )
-            self._load_devices()
-            return
-
         self.btn_install_vbcable.setEnabled(False)
         self.lbl_install_status.setText("Opening installation dialog...")
 
