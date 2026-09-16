@@ -26,7 +26,14 @@ def load_config() -> dict:
         "desktop_muted": False,
         "mic_muted": False,
         "minimize_to_tray": False,
-        "auto_start": False
+        "auto_start": False,
+        "theme": "dark",
+        "check_updates": True,
+        "eq_bands": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "troll_mode": False,
+        "troll_bass": 28.0,
+        "troll_drive": 3.5,
+        "active_profile": "full_desktop"
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -55,6 +62,21 @@ def save_config(config: dict):
         logger.warning(f"Failed to save config: {e}")
 
 
+def open_linux_volume_control() -> bool:
+    """Launch Linux audio control panel (pavucontrol or system settings)."""
+    import shutil
+    import subprocess
+    for cmd in ["pavucontrol", "gnome-control-center sound", "systemsettings5 sound", "pavucontrol-qt"]:
+        parts = cmd.split()
+        if shutil.which(parts[0]):
+            try:
+                subprocess.Popen(parts)
+                return True
+            except Exception:
+                pass
+    return False
+
+
 class DeviceManager:
     def __init__(self):
         self.p = None
@@ -62,7 +84,10 @@ class DeviceManager:
 
     def _init_pyaudio(self):
         try:
-            import pyaudio
+            try:
+                import pyaudio
+            except ImportError:
+                import pyaudiowpatch as pyaudio
             self.p = pyaudio.PyAudio()
         except Exception as e:
             logger.error(f"PyAudio initialization error: {e}")

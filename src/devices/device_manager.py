@@ -242,7 +242,14 @@ def load_config():
         "desktop_muted": False,
         "mic_muted": False,
         "minimize_to_tray": False,
-        "auto_start": False
+        "auto_start": False,
+        "theme": "dark",
+        "check_updates": True,
+        "eq_bands": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "troll_mode": False,
+        "troll_bass": 28.0,
+        "troll_drive": 3.5,
+        "active_profile": "full_desktop"
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -329,4 +336,113 @@ def set_windows_default_input_device(device_name_substring: str) -> bool:
     except Exception as e:
         print(f"Error setting default endpoint: {e}", file=sys.stderr)
         return False
+
+
+def get_active_audio_sessions() -> list[dict]:
+    """
+    Returns active Windows audio sessions (processes playing audio).
+    Returns list of dicts: {'pid': int, 'name': str, 'display_name': str, 'volume': float, 'muted': bool}
+    """
+    results = []
+    seen_pids = set()
+    try:
+        from pycaw.pycaw import AudioUtilities
+        sessions = AudioUtilities.GetAllSessions()
+        for s in sessions:
+            if not s.Process or s.ProcessId in seen_pids:
+                continue
+            seen_pids.add(s.ProcessId)
+            p_name = s.Process.name()
+            # Beautify display name
+            display = p_name.replace(".exe", "").capitalize()
+            if "firefox" in p_name.lower():
+                display = "Firefox"
+            elif "chrome" in p_name.lower():
+                display = "Google Chrome"
+            elif "spotify" in p_name.lower():
+                display = "Spotify"
+            elif "discord" in p_name.lower():
+                display = "Discord"
+            elif "steam" in p_name.lower():
+                display = "Steam"
+
+            vol_ctl = s.SimpleAudioVolume
+            vol = float(vol_ctl.GetMasterVolume())
+            muted = bool(vol_ctl.GetMute())
+
+            results.append({
+                "pid": s.ProcessId,
+                "name": p_name,
+                "display_name": display,
+                "volume": vol,
+                "muted": muted
+            })
+    except Exception as e:
+        print(f"Error enumerating audio sessions: {e}", file=sys.stderr)
+    return results
+
+
+def set_session_volume(pid: int, volume: float) -> bool:
+    """Sets volume (0.0 to 1.0) for a given process ID."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process and s.ProcessId == pid:
+                s.SimpleAudioVolume.SetMasterVolume(float(max(0.0, min(1.0, volume))), None)
+                return True
+    except Exception as e:
+        print(f"Error setting session volume: {e}", file=sys.stderr)
+    return False
+
+
+def set_session_mute(pid: int, mute: bool) -> bool:
+    """Sets mute state for a given process ID."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process and s.ProcessId == pid:
+                s.SimpleAudioVolume.SetMute(int(mute), None)
+                return True
+    except Exception as e:
+        print(f"Error setting session mute: {e}", file=sys.stderr)
+    return False
+
+
+def solo_session(target_pid: int) -> bool:
+    """Mutes all other audio applications except the target PID."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process:
+                if s.ProcessId == target_pid:
+                    s.SimpleAudioVolume.SetMute(0, None)
+                else:
+                    s.SimpleAudioVolume.SetMute(1, None)
+        return True
+    except Exception as e:
+        print(f"Error soloing session: {e}", file=sys.stderr)
+    return False
+
+
+def unmute_all_sessions() -> bool:
+    """Unmutes all application audio sessions."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        for s in AudioUtilities.GetAllSessions():
+            if s.Process:
+                s.SimpleAudioVolume.SetMute(0, None)
+        return True
+    except Exception as e:
+        print(f"Error unmuting all sessions: {e}", file=sys.stderr)
+    return False
+
+
+def open_windows_app_volume_settings():
+    """Opens Windows Settings > System > Sound > Volume mixer (App volume and device preferences)."""
+    import subprocess
+    try:
+        subprocess.Popen("start ms-settings:apps-volume", shell=True)
+    except Exception as e:
+        print(f"Error opening settings: {e}", file=sys.stderr)
+
 

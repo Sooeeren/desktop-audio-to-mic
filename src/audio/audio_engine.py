@@ -81,7 +81,51 @@ def adjust_channels(data: np.ndarray, in_ch: int, out_ch: int) -> np.ndarray:
             return data[:, :out_ch]
     except Exception as e:
         logger.error(f"Error in adjust_channels: {e}")
-        return np.zeros((len(data), out_ch), dtype=np.float32)
+EQ_FREQUENCIES = [60, 150, 400, 1000, 2500, 6000, 15000]
+
+
+def apply_eq_and_fx(samples: np.ndarray, sample_rate: int, eq_gains: list, troll_mode: bool, troll_bass: float, troll_drive: float) -> np.ndarray:
+    """
+    Applies 7-band parametric EQ and optional Troll Mode (sub-bass boost + saturation).
+    """
+    has_eq = any(abs(g) > 0.1 for g in eq_gains)
+    if not has_eq and not troll_mode:
+        return samples
+
+    n = len(samples)
+    if n < 16:
+        return samples
+
+    try:
+        freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
+
+        if has_eq:
+            log_f = np.log10(np.maximum(freqs, 20.0))
+            log_centers = np.log10(EQ_FREQUENCIES)
+            gain_db = np.interp(log_f, log_centers, eq_gains)
+            gain_linear = 10.0 ** (gain_db / 20.0)
+        else:
+            gain_linear = np.ones_like(freqs)
+
+        if troll_mode:
+            troll_boost = 10.0 ** (troll_bass / 20.0)
+            troll_curve = np.where(freqs < 120, troll_boost, np.where(freqs < 280, 1.0 + (troll_boost - 1.0) * (280 - freqs) / 160.0, 1.0))
+            gain_linear *= troll_curve
+
+        fft_vals = np.fft.rfft(samples, axis=0)
+        fft_vals *= gain_linear[:, None]
+        filtered = np.fft.irfft(fft_vals, n=n, axis=0)
+
+        if troll_mode:
+            filtered = np.tanh(filtered * troll_drive)
+            filtered = np.clip(filtered, -0.98, 0.98)
+        else:
+            filtered = np.clip(filtered, -1.0, 1.0)
+
+        return filtered.astype(np.float32)
+    except Exception as ex:
+        logger.error(f"Error in apply_eq_and_fx: {ex}")
+        return samples
 
 
 class AudioEngine:
@@ -114,6 +158,13 @@ class AudioEngine:
         self.mic_queue = collections.deque(maxlen=40)
         self._queue_lock = threading.Lock()
 
+        # DSP Equalizer & Troll Mode FX
+        self.eq_bands = [0.0] * 7
+        self.troll_mode = False
+        self.troll_bass = 28.0
+        self.troll_drive = 3.5
+        self._fx_lock = threading.Lock()
+
         self._stream_lock = threading.RLock()
 
     def is_running(self) -> bool:
@@ -130,6 +181,27 @@ class AudioEngine:
 
     def set_mic_muted(self, muted: bool):
         self.mic_muted = bool(muted)
+
+    def set_eq_bands(self, bands: list):
+        """Sets 7-band EQ gains in dB (-12.0 to +12.0)."""
+        with self._fx_lock:
+            self.eq_bands = [float(b) for b in bands[:7]]
+
+    def set_troll_mode(self, enabled: bool, bass: float = 28.0, drive: float = 3.5):
+        """Toggles Troll Mode (extreme sub-bass boost & soft-clip overdrive)."""
+        with self._fx_lock:
+            self.troll_mode = bool(enabled)
+            self.troll_bass = float(bass)
+            self.troll_drive = float(drive)
+
+    def apply_eq_and_fx(self, samples: np.ndarray, sample_rate: int = 48000) -> np.ndarray:
+        """Applies current EQ and Troll Mode FX to an audio chunk."""
+        with self._fx_lock:
+            cur_eq = list(self.eq_bands)
+            cur_troll = self.troll_mode
+            cur_bass = self.troll_bass
+            cur_drive = self.troll_drive
+        return apply_eq_and_fx(samples, sample_rate, cur_eq, cur_troll, cur_bass, cur_drive)
 
     def get_meter_levels(self) -> tuple[float, float, float]:
         """Returns instantaneous (desktop, mic, output) audio levels (0.0 - 1.0)."""
@@ -346,10 +418,25 @@ class AudioEngine:
                     else:
                         to_play = np.clip(d_play, -1.0, 1.0)
 
-                    # Compute output level for visualizer
+                    # Apply Equalizer & Troll Mode FX
+                    with self._fx_lock:
+                        cur_eq = list(self.eq_bands)
+                        cur_troll = self.troll_mode
+                        cur_bass = self.troll_bass
+                        cur_drive = self.troll_drive
+
+                    if any(abs(g) > 0.1 for g in cur_eq) or cur_troll:
+                        to_play = apply_eq_and_fx(to_play, out_rate, cur_eq, cur_troll, cur_bass, cur_drive)
+
+                    # Compute output level and store samples for visualizer
                     peak_out = float(np.max(np.abs(to_play))) if len(to_play) > 0 else 0.0
                     with self._meter_lock:
                         self.meter_out = max(self.meter_out, min(1.0, peak_out))
+                        mono_vis = np.mean(to_play, axis=1) if to_play.ndim > 1 else to_play
+                        if len(mono_vis) >= 1024:
+                            self.latest_samples = np.copy(mono_vis[-1024:])
+                        elif len(mono_vis) > 0:
+                            self.latest_samples = np.pad(mono_vis, (0, 1024 - len(mono_vis)))
 
                     out_bytes = (to_play * 32767.0).astype(np.int16).tobytes()
                     return (out_bytes, pyaudio.paContinue)
