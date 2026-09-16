@@ -519,7 +519,7 @@ class MainWindow(QMainWindow):
         t_row = QHBoxLayout()
         title = QLabel("🎙️ Desktop Audio to Mic")
         title.setProperty("class", "title")
-        ver = QLabel("Linux v1.3.0")
+        ver = QLabel("Linux v1.5.0")
         ver.setStyleSheet("color: #5865f2; font-size: 11px; font-weight: bold; background: #1e1f22; padding: 2px 8px; border-radius: 4px;")
         t_row.addWidget(title)
         t_row.addWidget(ver)
