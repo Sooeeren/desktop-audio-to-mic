@@ -46,20 +46,23 @@ def main():
     sys.excepthook = excepthook
 
     # Enable crisp font rendering and high DPI support
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        pass
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
 
-    # Windows taskbar grouping ID so the app has its own distinct taskbar icon
-    try:
-        app_id = "discord.desktop.audio.mic.1.0"
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-    except Exception:
-        pass
+        # Windows taskbar grouping ID so the app has its own distinct taskbar icon
+        try:
+            app_id = "discord.desktop.audio.mic.1.0"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception:
+            pass
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("discord-desktop-audio-mic")
 
     splash = ModernSplashScreen()
     splash.show()

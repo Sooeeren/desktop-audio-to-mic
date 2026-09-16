@@ -6,10 +6,25 @@ resamples/downmixes signals, and outputs to a virtual audio cable endpoint with 
 
 import collections
 import logging
+import sys
 import threading
 import time
 import numpy as np
-import pyaudiowpatch as pyaudio
+
+pyaudio = None
+if sys.platform == "win32":
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        try:
+            import pyaudio
+        except ImportError:
+            pyaudio = None
+else:
+    try:
+        import pyaudio
+    except ImportError:
+        pyaudio = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("AudioEngine")
@@ -159,6 +174,9 @@ class AudioEngine:
             if self.is_running_flag:
                 self.stop()
 
+            if pyaudio is None:
+                raise RuntimeError("PyAudio is not installed. Please run: pip install -r requirements.txt")
+
             logger.info("Initializing audio streaming engine...")
             self.p = pyaudio.PyAudio()
 
@@ -174,12 +192,6 @@ class AudioEngine:
             in_rate = int(lb_info["defaultSampleRate"])
             in_ch = int(lb_info["maxInputChannels"])
             lb_idx = int(lb_info["index"])
-
-            # Keep-alive speaker specs
-            speaker_info = desktop_source["output_info"]
-            speaker_idx = int(speaker_info["index"])
-            speaker_ch = int(speaker_info["maxOutputChannels"])
-            speaker_rate = int(speaker_info["defaultSampleRate"])
 
             logger.info(f"Target Mic: {target_mic['name']} ({out_rate} Hz, {out_ch} ch)")
             logger.info(f"Desktop Source: {desktop_source['name']} ({in_rate} Hz, {in_ch} ch)")
@@ -231,13 +243,20 @@ class AudioEngine:
                     return (None, pyaudio.paContinue)
 
             # 2. Keep-alive Callback (silence on source speaker so WASAPI stays active)
-            def keepalive_callback(in_data, frame_count, time_info, status):
-                try:
-                    if not self.is_running_flag:
-                        return (None, pyaudio.paAbort)
-                    return (b'\x00' * (frame_count * speaker_ch * 2), pyaudio.paContinue)
-                except Exception:
-                    return (b'', pyaudio.paContinue)
+            speaker_info = desktop_source.get("output_info")
+            needs_keepalive = bool(sys.platform == "win32" and speaker_info and speaker_info.get("maxOutputChannels", 0) > 0)
+            if needs_keepalive:
+                speaker_idx = int(speaker_info["index"])
+                speaker_ch = int(speaker_info["maxOutputChannels"])
+                speaker_rate = int(speaker_info["defaultSampleRate"])
+
+                def keepalive_callback(in_data, frame_count, time_info, status):
+                    try:
+                        if not self.is_running_flag:
+                            return (None, pyaudio.paAbort)
+                        return (b'\x00' * (frame_count * speaker_ch * 2), pyaudio.paContinue)
+                    except Exception:
+                        return (b'', pyaudio.paContinue)
 
             # 3. Real Mic Callback (if enabled)
             mic_rate = None
@@ -359,15 +378,16 @@ class AudioEngine:
 
             try:
                 # Open streams
-                self.keepalive_stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=speaker_ch,
-                    rate=speaker_rate,
-                    output=True,
-                    output_device_index=speaker_idx,
-                    stream_callback=keepalive_callback,
-                    frames_per_buffer=1024
-                )
+                if needs_keepalive:
+                    self.keepalive_stream = self.p.open(
+                        format=pyaudio.paInt16,
+                        channels=speaker_ch,
+                        rate=speaker_rate,
+                        output=True,
+                        output_device_index=speaker_idx,
+                        stream_callback=keepalive_callback,
+                        frames_per_buffer=1024
+                    )
 
                 self.lb_stream = self.p.open(
                     format=pyaudio.paInt16,
@@ -402,7 +422,8 @@ class AudioEngine:
 
                 self.is_running_flag = True
 
-                self.keepalive_stream.start_stream()
+                if self.keepalive_stream:
+                    self.keepalive_stream.start_stream()
                 self.lb_stream.start_stream()
                 if self.mic_stream:
                     self.mic_stream.start_stream()

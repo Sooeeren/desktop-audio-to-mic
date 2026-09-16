@@ -1,8 +1,14 @@
-pyaudiowpatch>=0.2.12
+# Windows-specific dependencies (WASAPI loopback and COM endpoint control)
+pyaudiowpatch>=0.2.12; sys_platform == 'win32'
+comtypes>=1.4.0; sys_platform == 'win32'
+pycaw>=20240210; sys_platform == 'win32'
+
+# Linux / Unix dependencies (PortAudio interface)
+pyaudio>=0.2.14; sys_platform != 'win32'
+
+# Cross-platform core dependencies
 sounddevice>=0.5.0
 numpy>=1.26.0
 PySide6>=6.8.0
-comtypes>=1.4.0
-pycaw>=20240210
 requests>=2.31.0
 pyinstaller>=6.0.0
