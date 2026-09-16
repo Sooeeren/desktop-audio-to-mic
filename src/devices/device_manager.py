@@ -226,6 +226,164 @@ class DeviceManager:
         mics.sort(key=lambda x: (x["is_virtual"], not x["is_default"], x["name"]))
         return mics
 
+    def get_playback_devices(self):
+        """
+        Returns physical playback devices (headphones, headsets, speakers)
+        suitable for user headset monitoring.
+        """
+        if self.wasapi_api_index is None:
+            return []
+
+        try:
+            wasapi_info = self.p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_out_idx = wasapi_info.get("defaultOutputDevice", -1)
+        except Exception:
+            default_out_idx = -1
+
+        playbacks = []
+        num_devices = self.p.get_device_count()
+        for idx in range(num_devices):
+            try:
+                info = self.p.get_device_info_by_index(idx)
+            except Exception:
+                continue
+
+            if info["hostApi"] != self.wasapi_api_index:
+                continue
+            if info["maxOutputChannels"] <= 0:
+                continue
+
+            name = info["name"]
+            is_virtual = any(kw in name.lower() for kw in VIRTUAL_CABLE_KEYWORDS)
+            is_default = (idx == default_out_idx)
+
+            playbacks.append({
+                "id": idx,
+                "name": name,
+                "display_name": f"{name}{' (Windows Default)' if is_default else ''}",
+                "device_info": info,
+                "is_default": is_default,
+                "is_virtual": is_virtual
+            })
+
+        # Physical devices first, then default
+        playbacks.sort(key=lambda x: (x["is_virtual"], not x["is_default"], x["name"]))
+        return playbacks
+
+    def generate_diagnostic_report(self, config: dict = None) -> str:
+        """
+        Generates a comprehensive diagnostic report of the system, audio hardware,
+        drivers, audio sessions, and configuration for troubleshooting.
+        """
+        import platform
+        import datetime
+        lines = []
+        lines.append("=" * 60)
+        lines.append("  DESKTOP AUDIO TO MIC - DIAGNOSTIC & HARDWARE REPORT")
+        lines.append(f"  Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 60)
+        lines.append("")
+
+        # 1. Environment Info
+        lines.append("[1. SYSTEM ENVIRONMENT]")
+        lines.append(f"OS: {platform.system()} {platform.release()} (Version {platform.version()})")
+        lines.append(f"Architecture: {platform.machine()} ({platform.architecture()[0]})")
+        lines.append(f"Python: {platform.python_version()} ({sys.executable})")
+        lines.append(f"Frozen Executable: {getattr(sys, 'frozen', False)}")
+        lines.append("")
+
+        # 2. Audio Subsystem
+        lines.append("[2. WASAPI AUDIO HOST API]")
+        if not self.p:
+            lines.append("ERROR: PyAudio instance is not initialized!")
+        else:
+            try:
+                count = self.p.get_host_api_count()
+                lines.append(f"Total Host APIs: {count}")
+                for i in range(count):
+                    api_info = self.p.get_host_api_info_by_index(i)
+                    is_target = (i == self.wasapi_api_index)
+                    lines.append(f"  - [{i}] {api_info.get('name')} (devices: {api_info.get('deviceCount')}) {'<-- ACTIVE WASAPI' if is_target else ''}")
+            except Exception as e:
+                lines.append(f"Error querying host APIs: {e}")
+        lines.append("")
+
+        # 3. Audio Endpoints Enumeration
+        lines.append("[3. DISCOVERED AUDIO ENDPOINTS]")
+        if self.p:
+            try:
+                num_devs = self.p.get_device_count()
+                lines.append(f"Total PyAudio Devices: {num_devs}")
+                for i in range(num_devs):
+                    try:
+                        d = self.p.get_device_info_by_index(i)
+                        api = d.get('hostApi')
+                        if api == self.wasapi_api_index:
+                            in_ch = d.get('maxInputChannels', 0)
+                            out_ch = d.get('maxOutputChannels', 0)
+                            rate = int(d.get('defaultSampleRate', 0))
+                            is_lb = d.get('isLoopbackDevice', False)
+                            type_str = "Loopback" if is_lb else ("Input/Mic" if in_ch > 0 else "Output/Playback")
+                            lines.append(f"  [{i:2d}] {d.get('name')} | {type_str} | In:{in_ch} Out:{out_ch} | {rate}Hz")
+                    except Exception as dev_err:
+                        lines.append(f"  [{i:2d}] Error: {dev_err}")
+            except Exception as e:
+                lines.append(f"Error enumerating devices: {e}")
+        lines.append("")
+
+        # 4. Virtual Audio Cables Status
+        lines.append("[4. VIRTUAL AUDIO DRIVERS]")
+        targets = self.get_target_microphones()
+        if targets:
+            for t in targets:
+                lines.append(f"  ✓ {t['display_name']} (Device ID: {t['id']})")
+        else:
+            lines.append("  ⚠️ No virtual microphone endpoints detected!")
+            lines.append("     Install VB-Audio Virtual Cable or SteelSeries Sonar.")
+        lines.append("")
+
+        # 5. Active Applications Audio Sessions
+        lines.append("[5. ACTIVE APPLICATION SESSIONS (pycaw)]")
+        try:
+            sessions = get_active_audio_sessions()
+            if sessions:
+                for s in sessions:
+                    st = "MUTED" if s.get('is_muted') else "ACTIVE"
+                    lines.append(f"  - {s.get('name')} (PID {s.get('pid')}): {int(s.get('volume', 1.0)*100)}% [{st}]")
+            else:
+                lines.append("  No active audio sessions currently playing sound.")
+        except Exception as e:
+            lines.append(f"  Could not inspect audio sessions: {e}")
+        lines.append("")
+
+        # 6. Current Configuration
+        lines.append("[6. SAVED CONFIGURATION (config.json)]")
+        try:
+            cfg = config if config is not None else load_config()
+            lines.append(json.dumps(cfg, indent=2))
+        except Exception as e:
+            lines.append(f"  Error reading config: {e}")
+        lines.append("")
+
+        # 7. Recent Crash / Log History
+        lines.append("[7. RECENT LOG HISTORY]")
+        log_file = os.path.join(ROOT_DIR, "crash.log")
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    log_tail = f.readlines()[-40:]
+                    lines.extend([l.rstrip() for l in log_tail])
+            except Exception as e:
+                lines.append(f"Error reading crash.log: {e}")
+        else:
+            lines.append("  No crash.log found (clean run).")
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("  END OF DIAGNOSTIC REPORT")
+        lines.append("=" * 60)
+
+        return "\n".join(lines)
+
     def terminate(self):
         if self.p:
             self.p.terminate()
@@ -249,7 +407,10 @@ def load_config():
         "troll_mode": False,
         "troll_bass": 28.0,
         "troll_drive": 3.5,
-        "active_profile": "full_desktop"
+        "active_profile": "full_desktop",
+        "headset_monitor_enabled": False,
+        "headset_monitor_device_name": "",
+        "headset_monitor_volume": 1.0
     }
     if os.path.exists(CONFIG_FILE):
         try:

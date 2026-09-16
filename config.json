@@ -23,5 +23,8 @@
   "troll_mode": false,
   "troll_bass": 28.0,
   "troll_drive": 3.5,
-  "active_profile": "full_desktop"
+  "active_profile": "full_desktop",
+  "headset_monitor_enabled": false,
+  "headset_monitor_device_name": "",
+  "headset_monitor_volume": 1.0
 }

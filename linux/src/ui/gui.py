@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QSlider, QFrame,
     QProgressBar, QSystemTrayIcon, QMenu, QMessageBox, QDialog,
-    QStackedWidget, QRadioButton, QButtonGroup, QScrollArea, QSizePolicy
+    QStackedWidget, QRadioButton, QButtonGroup, QScrollArea, QSizePolicy,
+    QPlainTextEdit, QFileDialog
 )
 
 try:
@@ -764,6 +765,401 @@ class SignalBridge(QObject):
     driver_status_signal = Signal(str)
 
 
+class StudioFader(QWidget):
+    valueChanged = Signal(int)
+
+    def __init__(self, min_val=-12, max_val=12, init_val=0, freq_label="1 kHz", role_label="MIDS", parent=None):
+        super().__init__(parent)
+        self._min = min_val
+        self._max = max_val
+        self._val = init_val
+        self.freq_label = freq_label
+        self.role_label = role_label
+        self.meter_level = 0.0
+        self.peak_level = 0.0
+        self.is_hovered = False
+        self.is_dragging = False
+
+        self.setFixedWidth(74)
+        self.setFixedHeight(216)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
+
+    def minimum(self) -> int:
+        return self._min
+
+    def maximum(self) -> int:
+        return self._max
+
+    def value(self) -> int:
+        return self._val
+
+    def setValue(self, val: int):
+        clamped = max(self._min, min(self._max, int(val)))
+        if clamped != self._val:
+            self._val = clamped
+            self.update()
+            self.valueChanged.emit(self._val)
+
+    def set_meter_level(self, lvl: float):
+        lvl = max(0.0, min(1.0, float(lvl)))
+        self.meter_level = max(lvl, self.meter_level * 0.85)
+        self.peak_level = max(self.meter_level, self.peak_level * 0.95)
+        self.update()
+
+    def blockSignals(self, b: bool):
+        super().blockSignals(b)
+
+    def enterEvent(self, event):
+        self.is_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.is_hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setValue(0)
+            event.accept()
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        step = 1 if delta > 0 else -1
+        self.setValue(self._val + step)
+        event.accept()
+
+    def _val_to_y(self, val: float, track_top: float, track_bottom: float) -> float:
+        pct = (val - self._min) / float(self._max - self._min)
+        return track_bottom - pct * (track_bottom - track_top)
+
+    def _y_to_val(self, y: float, track_top: float, track_bottom: float) -> int:
+        pct = (track_bottom - y) / float(track_bottom - track_top)
+        pct = max(0.0, min(1.0, pct))
+        return int(round(self._min + pct * (self._max - self._min)))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = True
+            track_top = 34.0
+            track_bottom = 162.0
+            val = self._y_to_val(event.position().y(), track_top, track_bottom)
+            self.setValue(val)
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.is_dragging:
+            track_top = 34.0
+            track_bottom = 162.0
+            val = self._y_to_val(event.position().y(), track_top, track_bottom)
+            self.setValue(val)
+            event.accept()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+            self.update()
+            event.accept()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        # 1. Metallic Faceplate Background
+        plate_grad = QLinearGradient(0, 0, w, 0)
+        plate_grad.setColorAt(0.0, QColor("#1e2025"))
+        plate_grad.setColorAt(0.15, QColor("#282b33"))
+        plate_grad.setColorAt(0.85, QColor("#282b33"))
+        plate_grad.setColorAt(1.0, QColor("#1c1e22"))
+
+        painter.setBrush(QBrush(plate_grad))
+        painter.setPen(QPen(QColor("#383c46"), 1))
+        painter.drawRoundedRect(1, 1, w - 2, h - 2, 6, 6)
+
+        # Subtle chassis screws
+        screw_pen = QPen(QColor("#15161a"), 1)
+        screw_brush = QBrush(QColor("#3a3e47"))
+        for sx, sy in [(5, 5), (w - 8, 5), (5, h - 8), (w - 8, h - 8)]:
+            painter.setPen(screw_pen)
+            painter.setBrush(screw_brush)
+            painter.drawEllipse(sx, sy, 3, 3)
+
+        track_top = 34.0
+        track_bottom = 162.0
+        track_h = track_bottom - track_top
+        track_center_x = w / 2.0
+
+        # 2. Calibration dB Scale Ticks & Text
+        db_marks = [
+            (12, "+12", True),
+            (9, "", False),
+            (6, "+6", True),
+            (3, "", False),
+            (0, " 0", True),
+            (-3, "", False),
+            (-6, "-6", True),
+            (-9, "", False),
+            (-12, "-12", True),
+        ]
+
+        font = painter.font()
+        font.setPointSize(6)
+        font.setBold(True)
+        painter.setFont(font)
+
+        for db_val, label, is_major in db_marks:
+            y = self._val_to_y(db_val, track_top, track_bottom)
+            is_zero = (db_val == 0)
+
+            if is_zero:
+                tick_color = QColor("#5865f2")
+                text_color = QColor("#8593ff")
+                tick_len = 7
+            elif is_major:
+                tick_color = QColor("#8e929b")
+                text_color = QColor("#949ba4")
+                tick_len = 5
+            else:
+                tick_color = QColor("#464952")
+                text_color = QColor("#5c6068")
+                tick_len = 3
+
+            # Left ticks & label
+            painter.setPen(QPen(tick_color, 1.4 if is_zero else 1))
+            painter.drawLine(int(track_center_x - 14 - tick_len), int(y), int(track_center_x - 14), int(y))
+            if label:
+                painter.setPen(text_color)
+                painter.drawText(QRectF(1, y - 5, 16, 10), Qt.AlignRight | Qt.AlignVCenter, label.strip())
+
+            # Right ticks
+            painter.setPen(QPen(tick_color, 1.4 if is_zero else 1))
+            painter.drawLine(int(track_center_x + 14), int(y), int(track_center_x + 14 + tick_len), int(y))
+
+        # 3. Center Track Slot
+        slot_w = 4.0
+        slot_x = track_center_x - slot_w / 2.0
+        painter.setBrush(QBrush(QColor("#0d0e10")))
+        painter.setPen(QPen(QColor("#15161a"), 1))
+        painter.drawRoundedRect(QRectF(slot_x, track_top - 2, slot_w, track_h + 4), 2, 2)
+
+        # 4. Mini LED Level Meter Column alongside track
+        led_x = track_center_x + 17.0
+        num_leds = 14
+        led_gap = 1.5
+        total_led_h = track_h
+        led_item_h = (total_led_h - (num_leds - 1) * led_gap) / float(num_leds)
+        active_leds = int(self.meter_level * num_leds)
+
+        for li in range(num_leds):
+            ly = track_bottom - (li + 1) * led_item_h - li * led_gap
+            pct = li / float(num_leds)
+            if pct < 0.65:
+                on_c = QColor("#23a55a")
+            elif pct < 0.88:
+                on_c = QColor("#f0b232")
+            else:
+                on_c = QColor("#f23f43")
+
+            if li < active_leds:
+                painter.setBrush(QBrush(on_c))
+                painter.setPen(Qt.NoPen)
+            else:
+                dim_c = QColor(on_c.red(), on_c.green(), on_c.blue(), 30)
+                painter.setBrush(QBrush(dim_c))
+                painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(QRectF(led_x, ly, 2.5, led_item_h), 0.5, 0.5)
+
+        # 5. Contoured 3D Fader Knob (Thumb Cap)
+        knob_y = self._val_to_y(self._val, track_top, track_bottom)
+        kw = 40.0
+        kh = 24.0
+        kx = track_center_x - kw / 2.0
+        ky = knob_y - kh / 2.0
+
+        # Drop shadow underneath knob
+        painter.setBrush(QBrush(QColor(0, 0, 0, 110)))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(QRectF(kx - 1, ky + 2, kw + 2, kh + 2), 3, 3)
+
+        # Knob cap metallic gradient body
+        knob_grad = QLinearGradient(kx, ky, kx, ky + kh)
+        if self.is_hovered or self.is_dragging:
+            knob_grad.setColorAt(0.0, QColor("#6c727d"))
+            knob_grad.setColorAt(0.25, QColor("#464952"))
+            knob_grad.setColorAt(0.5, QColor("#30333a"))
+            knob_grad.setColorAt(0.75, QColor("#464952"))
+            knob_grad.setColorAt(1.0, QColor("#1e2024"))
+            knob_border = QColor("#8593ff")
+        else:
+            knob_grad.setColorAt(0.0, QColor("#545862"))
+            knob_grad.setColorAt(0.25, QColor("#383b42"))
+            knob_grad.setColorAt(0.5, QColor("#25272c"))
+            knob_grad.setColorAt(0.75, QColor("#383b42"))
+            knob_grad.setColorAt(1.0, QColor("#1a1b1e"))
+            knob_border = QColor("#4a4f5a")
+
+        painter.setBrush(QBrush(knob_grad))
+        painter.setPen(QPen(knob_border, 1.2 if (self.is_hovered or self.is_dragging) else 1))
+        painter.drawRoundedRect(QRectF(kx, ky, kw, kh), 3, 3)
+
+        # Tactile grip ridges (horizontal grooves on top and bottom slope)
+        ridge_pen = QPen(QColor(255, 255, 255, 45), 1)
+        ridge_shadow = QPen(QColor(0, 0, 0, 90), 1)
+        # Top ridges
+        for roff in [3.5, 6.0]:
+            painter.setPen(ridge_shadow)
+            painter.drawLine(int(kx + 5), int(ky + roff + 1), int(kx + kw - 5), int(ky + roff + 1))
+            painter.setPen(ridge_pen)
+            painter.drawLine(int(kx + 5), int(ky + roff), int(kx + kw - 5), int(ky + roff))
+        # Bottom ridges
+        for roff in [kh - 6.0, kh - 3.5]:
+            painter.setPen(ridge_shadow)
+            painter.drawLine(int(kx + 5), int(ky + roff + 1), int(kx + kw - 5), int(ky + roff + 1))
+            painter.setPen(ridge_pen)
+            painter.drawLine(int(kx + 5), int(ky + roff), int(kx + kw - 5), int(ky + roff))
+
+        # Center concave finger groove & high-visibility indicator line
+        groove_y = ky + kh / 2.0
+        center_color = QColor("#ffffff") if not self.is_dragging else QColor("#5865f2")
+        painter.setPen(QPen(center_color, 2))
+        painter.drawLine(int(kx + 2), int(groove_y), int(kx + kw - 2), int(groove_y))
+
+        # 6. Current dB Readout (Header Badge)
+        val_str = f"+{self._val} dB" if self._val > 0 else (f"{self._val} dB" if self._val < 0 else "0 dB")
+        val_color = QColor("#23a55a") if self._val > 0 else (QColor("#f23f43") if self._val < 0 else QColor("#5865f2"))
+
+        painter.setBrush(QBrush(QColor("#151619")))
+        painter.setPen(QPen(val_color, 1))
+        painter.drawRoundedRect(QRectF(7, 6, w - 14, 16), 3, 3)
+
+        val_font = painter.font()
+        val_font.setPointSize(7)
+        val_font.setBold(True)
+        painter.setFont(val_font)
+        painter.setPen(val_color)
+        painter.drawText(QRectF(7, 6, w - 14, 16), Qt.AlignCenter, val_str)
+
+        # 7. Frequency & Role Label (Bottom Footer)
+        foot_font = painter.font()
+        foot_font.setPointSize(7)
+        foot_font.setBold(True)
+        painter.setFont(foot_font)
+        painter.setPen(QColor("#f2f3f5"))
+        painter.drawText(QRectF(2, h - 38, w - 4, 16), Qt.AlignCenter, self.freq_label)
+
+        role_font = painter.font()
+        role_font.setPointSize(6)
+        role_font.setBold(False)
+        painter.setFont(role_font)
+        painter.setPen(QColor("#949ba4"))
+        painter.drawText(QRectF(2, h - 22, w - 4, 14), Qt.AlignCenter, self.role_label)
+
+
+class DiagnosticsDialog(QDialog):
+    def __init__(self, dm, config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("System Diagnostics & Linux Audio Report")
+        self.resize(760, 560)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        # Header
+        t_row = QHBoxLayout()
+        title_lbl = QLabel("📋  Linux Audio Hardware & System Diagnostics")
+        title_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #f2f3f5;")
+        t_row.addWidget(title_lbl)
+        t_row.addStretch()
+        layout.addLayout(t_row)
+
+        desc_lbl = QLabel(
+            "Complete log of Linux ALSA/PulseAudio/PipeWire endpoints, virtual sinks, and configuration. "
+            "Share this report if you or a friend encounter setup or driver issues."
+        )
+        desc_lbl.setStyleSheet("color: #949ba4; font-size: 12px;")
+        desc_lbl.setWordWrap(True)
+        layout.addWidget(desc_lbl)
+
+        # Text area
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setReadOnly(True)
+        font = QFont("Monospace", 10)
+        font.setStyleHint(QFont.Monospace)
+        self.text_edit.setFont(font)
+        self.text_edit.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #111214;
+                color: #dbdee1;
+                border: 1px solid #35373c;
+                border-radius: 6px;
+                padding: 10px;
+                line-height: 1.4;
+            }
+        """)
+
+        # Generate report
+        self.report_text = dm.generate_diagnostic_report(config)
+        self.text_edit.setPlainText(self.report_text)
+        layout.addWidget(self.text_edit, 1)
+
+        # Action Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        self.btn_copy = QPushButton("📋 Copy to Clipboard")
+        self.btn_copy.setProperty("class", "primary")
+        self.btn_copy.setCursor(Qt.PointingHandCursor)
+        self.btn_copy.clicked.connect(self._copy_to_clipboard)
+        btn_row.addWidget(self.btn_copy)
+
+        self.btn_save = QPushButton("💾 Save as Text File (.txt)...")
+        self.btn_save.setProperty("class", "secondary")
+        self.btn_save.setCursor(Qt.PointingHandCursor)
+        self.btn_save.clicked.connect(self._save_to_file)
+        btn_row.addWidget(self.btn_save)
+
+        btn_row.addStretch()
+
+        self.btn_close = QPushButton("Close")
+        self.btn_close.setProperty("class", "ghost")
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_close)
+
+        layout.addLayout(btn_row)
+
+    def _copy_to_clipboard(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.report_text)
+        self.btn_copy.setText("✅ Copied to Clipboard!")
+        QTimer.singleShot(2500, lambda: self.btn_copy.setText("📋 Copy to Clipboard"))
+
+    def _save_to_file(self):
+        default_path = os.path.join(os.path.expanduser("~"), "desktop_audio_diagnostics.txt")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Diagnostic Report", default_path, "Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(self.report_text)
+                QMessageBox.information(
+                    self, "Report Saved",
+                    f"Diagnostic report successfully saved to:\n{file_path}"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, splash=None):
         super().__init__()
@@ -814,6 +1210,51 @@ class MainWindow(QMainWindow):
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._update_meters)
         self.meter_timer.start(33)
+
+    def _update_mute_button_style(self, btn, is_muted: bool, vol_slider=None, vol_label=None):
+        if is_muted:
+            btn.setChecked(True)
+            btn.setText("🔇 MUTED")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #da373c;
+                    color: #ffffff;
+                    border: 1px solid #f23f43;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 11px;
+                    padding: 5px 8px;
+                }
+                QPushButton:hover {
+                    background-color: #a1282c;
+                }
+            """)
+            if vol_label:
+                vol_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #80848e;")
+        else:
+            btn.setChecked(False)
+            btn.setText("🔊 Active")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2b2d31;
+                    color: #23a55a;
+                    border: 1px solid #35373c;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 11px;
+                    padding: 5px 8px;
+                }
+                QPushButton:hover {
+                    background-color: #35373c;
+                    border: 1px solid #23a55a;
+                }
+            """)
+            if vol_label:
+                vol_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #23a55a;")
+
+    def _show_diagnostics_dialog(self):
+        diag = DiagnosticsDialog(self.dm, self.config, self)
+        diag.exec()
 
     def _init_ui(self):
         self._apply_theme(self.current_theme)
@@ -1006,11 +1447,11 @@ class MainWindow(QMainWindow):
         self.lbl_desktop_vol.setStyleSheet("font-size: 12px; font-weight: bold; color: #23a55a;")
         v_row1.addWidget(self.lbl_desktop_vol)
 
-        self.btn_desktop_mute = QPushButton("Mute")
-        self.btn_desktop_mute.setProperty("class", "ghost")
-        self.btn_desktop_mute.setFixedWidth(54)
+        self.btn_desktop_mute = QPushButton("🔊 Active")
+        self.btn_desktop_mute.setFixedWidth(78)
         self.btn_desktop_mute.setCheckable(True)
         self.btn_desktop_mute.clicked.connect(self._on_desktop_mute_clicked)
+        self._update_mute_button_style(self.btn_desktop_mute, False, self.slider_desktop_vol, self.lbl_desktop_vol)
         v_row1.addWidget(self.btn_desktop_mute)
         c1_v.addLayout(v_row1)
 
@@ -1045,8 +1486,7 @@ class MainWindow(QMainWindow):
 
         self.combo_real_mic = NoWheelComboBox()
         self.combo_mic = self.combo_real_mic
-        self.combo_real_mic.currentIndexChanged.connect(self._on_device_selection_changed)
-        self.combo_real_mic.setEnabled(False)
+        self.combo_real_mic.currentIndexChanged.connect(self._on_real_mic_selected)
         c2_v.addWidget(self.combo_real_mic)
 
         v_row2 = QHBoxLayout()
@@ -1064,12 +1504,12 @@ class MainWindow(QMainWindow):
         self.lbl_mic_vol.setStyleSheet("font-size: 12px; font-weight: bold; color: #23a55a;")
         v_row2.addWidget(self.lbl_mic_vol)
 
-        self.btn_mic_mute = QPushButton("Mute")
-        self.btn_mic_mute.setProperty("class", "ghost")
-        self.btn_mic_mute.setFixedWidth(54)
+        self.btn_mic_mute = QPushButton("🔊 Active")
+        self.btn_mic_mute.setFixedWidth(78)
         self.btn_mic_mute.setCheckable(True)
         self.btn_mic_mute.setEnabled(False)
         self.btn_mic_mute.clicked.connect(self._on_mic_mute_clicked)
+        self._update_mute_button_style(self.btn_mic_mute, False, self.slider_mic_vol, self.lbl_mic_vol)
         v_row2.addWidget(self.btn_mic_mute)
         c2_v.addLayout(v_row2)
 
@@ -1082,6 +1522,57 @@ class MainWindow(QMainWindow):
         meter_box2.addWidget(self.meter_mic, 1)
         c2_v.addLayout(meter_box2)
         left_col.addWidget(c2)
+
+        # Card 2b: Headset Audio Monitor & Silent Room Mode
+        c_headset = QFrame()
+        c_headset.setProperty("class", "card")
+        ch_v = QVBoxLayout(c_headset)
+        ch_v.setContentsMargins(14, 10, 14, 10)
+        ch_v.setSpacing(6)
+
+        head_row_h = QHBoxLayout()
+        t_h = QLabel("🎧 Headset Monitor & Silent Room Mode")
+        t_h.setProperty("class", "sectionHeading")
+        head_row_h.addWidget(t_h)
+        badge_h = QLabel("LOCAL PLAYBACK")
+        badge_h.setStyleSheet("background: rgba(35, 165, 90, 0.15); color: #23a55a; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(35, 165, 90, 0.4);")
+        head_row_h.addWidget(badge_h)
+        head_row_h.addStretch()
+        self.switch_headset = ToggleSwitch("Headset Audio")
+        self.switch_headset.toggled.connect(self._on_headset_toggled)
+        head_row_h.addWidget(self.switch_headset)
+        ch_v.addLayout(head_row_h)
+
+        self.combo_headset_device = NoWheelComboBox()
+        self.combo_headset = self.combo_headset_device
+        self.combo_headset_device.currentIndexChanged.connect(self._on_headset_device_changed)
+        ch_v.addWidget(self.combo_headset_device)
+
+        v_row_h = QHBoxLayout()
+        v_row_h.setSpacing(10)
+        self.slider_headset_vol = GradientSlider(Qt.Horizontal)
+        self.slider_headset_vol.setRange(0, 150)
+        self.slider_headset_vol.setValue(100)
+        self.slider_headset_vol.valueChanged.connect(self._on_headset_vol_changed)
+        v_row_h.addWidget(self.slider_headset_vol, 1)
+
+        self.lbl_headset_vol = QLabel("100%")
+        self.lbl_headset_vol.setFixedWidth(44)
+        self.lbl_headset_vol.setStyleSheet("font-size: 12px; font-weight: bold; color: #23a55a;")
+        v_row_h.addWidget(self.lbl_headset_vol)
+
+        self.btn_headset_mute = QPushButton("🔊 Active")
+        self.btn_headset_mute.setFixedWidth(78)
+        self.btn_headset_mute.setCheckable(True)
+        self.btn_headset_mute.clicked.connect(self._on_headset_mute_toggled)
+        self._update_mute_button_style(self.btn_headset_mute, False, self.slider_headset_vol, self.lbl_headset_vol)
+        v_row_h.addWidget(self.btn_headset_mute)
+        ch_v.addLayout(v_row_h)
+
+        h_hint = QLabel("Plays audio directly into your headphones so you can mute external speakers or monitor Discord output.")
+        h_hint.setStyleSheet("color: #949ba4; font-size: 11px;")
+        ch_v.addWidget(h_hint)
+        left_col.addWidget(c_headset)
 
         grid.addLayout(left_col, 1)
 
@@ -1338,42 +1829,37 @@ class MainWindow(QMainWindow):
         eq_top.addWidget(btn_reset_eq)
         eq_l.addLayout(eq_top)
 
+        # Studio Console Faders Row
+        band_defs = [
+            ("60 Hz", "SUB"),
+            ("150 Hz", "BASS"),
+            ("400 Hz", "LOW MID"),
+            ("1 kHz", "MIDS"),
+            ("2.5 kHz", "PRES"),
+            ("6 kHz", "HIGHS"),
+            ("15 kHz", "AIR"),
+        ]
         sliders_row = QHBoxLayout()
-        sliders_row.setSpacing(18)
+        sliders_row.setSpacing(12)
+        sliders_row.setAlignment(Qt.AlignCenter)
 
         self.eq_sliders = []
         self.eq_val_labels = []
-        labels = ["60 Hz\n(Sub)", "150 Hz\n(Bass)", "400 Hz\n(Low Mid)", "1 kHz\n(Mids)", "2.5 kHz\n(Pres)", "6 kHz\n(High)", "15 kHz\n(Air)"]
 
-        for i in range(7):
-            band_v = QVBoxLayout()
-            band_v.setSpacing(4)
-            band_v.setAlignment(Qt.AlignCenter)
-
-            val_lbl = QLabel("0 dB")
-            val_lbl.setAlignment(Qt.AlignCenter)
-            val_lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #5865f2;")
-            self.eq_val_labels.append(val_lbl)
-            band_v.addWidget(val_lbl)
-
-            slider = GradientSlider(Qt.Vertical)
-            slider.setRange(-12, 12)
-            slider.setValue(int(self.eq_bands[i]))
-            slider.setFixedHeight(120)
-            slider.setCursor(Qt.PointingHandCursor)
-            slider.valueChanged.connect(self._on_eq_slider_changed)
-            self.eq_sliders.append(slider)
-            band_v.addWidget(slider, 1, Qt.AlignCenter)
-
-            f_lbl = QLabel(labels[i])
-            f_lbl.setAlignment(Qt.AlignCenter)
-            f_lbl.setStyleSheet("font-size: 11px; color: #949ba4;")
-            band_v.addWidget(f_lbl)
-
-            sliders_row.addLayout(band_v)
+        for i, (freq, role) in enumerate(band_defs):
+            init_v = int(self.eq_bands[i]) if i < len(self.eq_bands) else 0
+            fader = StudioFader(
+                min_val=-12,
+                max_val=12,
+                init_val=init_v,
+                freq_label=freq,
+                role_label=role
+            )
+            fader.valueChanged.connect(self._on_eq_slider_changed)
+            self.eq_sliders.append(fader)
+            sliders_row.addWidget(fader)
 
         eq_l.addLayout(sliders_row)
-        self._update_eq_labels()
         layout.addWidget(eq_card)
 
         # "TROLL" MODE CARD
@@ -1536,8 +2022,41 @@ class MainWindow(QMainWindow):
         p_row1.addWidget(self.switch_auto_start)
         p_row1.addStretch()
         pr_l.addLayout(p_row1)
-        layout.addWidget(pref_card)
+        # 4. About & Diagnostics Card
+        about_card = QFrame()
+        about_card.setProperty("class", "card")
+        ab_l = QVBoxLayout(about_card)
+        ab_l.setContentsMargins(16, 12, 16, 12)
+        ab_l.setSpacing(8)
 
+        ab_title = QLabel("ℹ️  About & Diagnostics")
+        ab_title.setProperty("class", "title")
+        ab_l.addWidget(ab_title)
+
+        ab_row = QHBoxLayout()
+        ab_row.setSpacing(10)
+
+        self.btn_export_diag = QPushButton("📋 Export Full Diagnostic Report & Logs")
+        self.btn_export_diag.setProperty("class", "primary")
+        self.btn_export_diag.setCursor(Qt.PointingHandCursor)
+        self.btn_export_diag.clicked.connect(self._show_diagnostics_dialog)
+        ab_row.addWidget(self.btn_export_diag)
+
+        btn_github = QPushButton("🌐 GitHub Repository")
+        btn_github.setProperty("class", "ghost")
+        btn_github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Sooeeren/desktop-audio-to-mic")))
+        ab_row.addWidget(btn_github)
+
+        btn_releases = QPushButton("📦 Release Notes")
+        btn_releases.setProperty("class", "ghost")
+        btn_releases.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+        ab_row.addWidget(btn_releases)
+
+        ab_row.addStretch()
+        ab_l.addLayout(ab_row)
+        layout.addWidget(about_card)
+
+        layout.addStretch()
         return page
 
     # =========================================================================
@@ -1720,10 +2239,12 @@ class MainWindow(QMainWindow):
         self.combo_desktop.blockSignals(True)
         self.combo_target.blockSignals(True)
         self.combo_real_mic.blockSignals(True)
+        self.combo_headset_device.blockSignals(True)
 
         self.combo_desktop.clear()
         self.combo_target.clear()
         self.combo_real_mic.clear()
+        self.combo_headset_device.clear()
 
         self.dm.terminate()
         self.dm = DeviceManager()
@@ -1740,12 +2261,18 @@ class MainWindow(QMainWindow):
                 self.combo_target.addItem(t["display_name"], t)
 
         real_mics = self.dm.get_real_microphones()
+        self.combo_real_mic.addItem("🚫 No Microphone (Disabled)", None)
         for m in real_mics:
             self.combo_real_mic.addItem(m["display_name"], m)
+
+        playbacks = self.dm.get_playback_devices()
+        for pb in playbacks:
+            self.combo_headset_device.addItem(pb["display_name"], pb)
 
         self.combo_desktop.blockSignals(False)
         self.combo_target.blockSignals(False)
         self.combo_real_mic.blockSignals(False)
+        self.combo_headset_device.blockSignals(False)
 
         saved_desk = self.config.get("desktop_source_name", "")
         if saved_desk:
@@ -1775,8 +2302,7 @@ class MainWindow(QMainWindow):
         self.engine.set_desktop_volume(d_vol / 100.0)
 
         d_muted = self.config.get("desktop_muted", False)
-        self.btn_desktop_mute.setChecked(d_muted)
-        self.btn_desktop_mute.setText("MUTED" if d_muted else "Mute")
+        self._update_mute_button_style(self.btn_desktop_mute, d_muted, self.slider_desktop_vol, self.lbl_desktop_vol)
         self.engine.set_desktop_muted(d_muted)
 
         m_vol = int(self.config.get("mic_volume", 1.0) * 100)
@@ -1785,21 +2311,70 @@ class MainWindow(QMainWindow):
         self.engine.set_mic_volume(m_vol / 100.0)
 
         m_muted = self.config.get("mic_muted", False)
-        self.btn_mic_mute.setChecked(m_muted)
-        self.btn_mic_mute.setText("MUTED" if m_muted else "Mute")
+        self._update_mute_button_style(self.btn_mic_mute, m_muted, self.slider_mic_vol, self.lbl_mic_vol)
         self.engine.set_mic_muted(m_muted)
 
         mix_enabled = self.config.get("mix_mic_enabled", False)
-        self.switch_mix_mic.setChecked(mix_enabled)
-        self.combo_real_mic.setEnabled(mix_enabled)
-        self.slider_mic_vol.setEnabled(mix_enabled)
-        self.btn_mic_mute.setEnabled(mix_enabled)
+        saved_mic = self.config.get("real_mic_name", "")
+        matched_mic = False
+        if saved_mic:
+            for i in range(self.combo_real_mic.count()):
+                d = self.combo_real_mic.itemData(i)
+                if d and saved_mic.lower() in d.get("name", "").lower():
+                    self.combo_real_mic.blockSignals(True)
+                    self.combo_real_mic.setCurrentIndex(i)
+                    self.combo_real_mic.blockSignals(False)
+                    matched_mic = True
+                    break
+
+        if not matched_mic or not mix_enabled:
+            self.combo_real_mic.blockSignals(True)
+            self.combo_real_mic.setCurrentIndex(0)
+            self.combo_real_mic.blockSignals(False)
+            self.switch_mix_mic.setChecked(False)
+            self.slider_mic_vol.setEnabled(False)
+            self.btn_mic_mute.setEnabled(False)
+        else:
+            self.switch_mix_mic.setChecked(True)
+            self.slider_mic_vol.setEnabled(True)
+            self.btn_mic_mute.setEnabled(True)
+
+        # Headset Monitor Configuration
+        h_enabled = self.config.get("headset_monitor_enabled", False)
+        self.switch_headset.setChecked(h_enabled)
+        self.combo_headset_device.setEnabled(h_enabled)
+        self.slider_headset_vol.setEnabled(h_enabled)
+        self.btn_headset_mute.setEnabled(h_enabled)
+
+        h_name = self.config.get("headset_monitor_device_name", "")
+        if h_name:
+            for i in range(self.combo_headset_device.count()):
+                d = self.combo_headset_device.itemData(i)
+                if d and h_name.lower() in d.get("name", "").lower():
+                    self.combo_headset_device.setCurrentIndex(i)
+                    break
+
+        h_vol = int(self.config.get("headset_monitor_volume", 1.0) * 100)
+        self.slider_headset_vol.setValue(h_vol)
+        self.lbl_headset_vol.setText(f"{h_vol}%")
+        self.engine.set_headset_monitor(
+            enabled=h_enabled,
+            device=self.combo_headset_device.currentData(),
+            volume=h_vol / 100.0
+        )
 
     def _save_current_config(self):
         cur_desk = self.combo_desktop.currentText()
         cur_tgt = self.combo_target.currentText()
-        cur_mic = self.combo_real_mic.currentText()
+        cur_mic_data = self.combo_real_mic.currentData()
+        cur_mic = cur_mic_data.get("name", "") if cur_mic_data else ""
 
+        h_data = self.combo_headset_device.currentData()
+        if h_data:
+            self.config["headset_monitor_device_name"] = h_data.get("name", "")
+
+        self.config["headset_monitor_enabled"] = self.switch_headset.isChecked()
+        self.config["headset_monitor_volume"] = self.slider_headset_vol.value() / 100.0
         self.config["desktop_source_name"] = cur_desk
         self.config["target_mic_name"] = cur_tgt
         self.config["real_mic_name"] = cur_mic
@@ -1855,12 +2430,41 @@ class MainWindow(QMainWindow):
         self._save_current_config()
 
     def _on_desktop_mute_clicked(self, checked):
-        self.btn_desktop_mute.setText("MUTED" if checked else "Mute")
+        self._update_mute_button_style(self.btn_desktop_mute, checked, self.slider_desktop_vol, self.lbl_desktop_vol)
         self.engine.set_desktop_muted(checked)
         self._save_current_config()
 
+    def _on_real_mic_selected(self, index: int):
+        data = self.combo_real_mic.itemData(index)
+        if data is None:
+            self.switch_mix_mic.blockSignals(True)
+            self.switch_mix_mic.setChecked(False)
+            self.switch_mix_mic.blockSignals(False)
+            self.slider_mic_vol.setEnabled(False)
+            self.btn_mic_mute.setEnabled(False)
+            self.config["mix_mic_enabled"] = False
+            self.config["real_mic_name"] = ""
+            self.engine.set_mic_volume(0.0)
+        else:
+            self.switch_mix_mic.blockSignals(True)
+            self.switch_mix_mic.setChecked(True)
+            self.switch_mix_mic.blockSignals(False)
+            self.slider_mic_vol.setEnabled(True)
+            self.btn_mic_mute.setEnabled(True)
+            self.config["mix_mic_enabled"] = True
+            self.config["real_mic_name"] = data.get("name", "")
+            self.engine.set_mic_volume(self.slider_mic_vol.value() / 100.0)
+        self._save_current_config()
+        if self.engine.is_running():
+            self._start_stream()
+
     def _on_mix_mic_toggled(self, checked):
-        self.combo_real_mic.setEnabled(checked)
+        if not checked:
+            self.combo_real_mic.setCurrentIndex(0)
+        else:
+            if self.combo_real_mic.currentIndex() == 0 and self.combo_real_mic.count() > 1:
+                self.combo_real_mic.setCurrentIndex(1)
+        self.combo_real_mic.setEnabled(True)
         self.slider_mic_vol.setEnabled(checked)
         self.btn_mic_mute.setEnabled(checked)
         self._save_current_config()
@@ -1875,9 +2479,41 @@ class MainWindow(QMainWindow):
         self._save_current_config()
 
     def _on_mic_mute_clicked(self, checked):
-        self.btn_mic_mute.setText("MUTED" if checked else "Mute")
+        self._update_mute_button_style(self.btn_mic_mute, checked, self.slider_mic_vol, self.lbl_mic_vol)
         self.engine.set_mic_muted(checked)
         self._save_current_config()
+
+    def _on_headset_toggled(self, checked: bool):
+        self.combo_headset_device.setEnabled(checked)
+        self.slider_headset_vol.setEnabled(checked)
+        self.btn_headset_mute.setEnabled(checked)
+        dev = self.combo_headset_device.currentData()
+        vol = self.slider_headset_vol.value() / 100.0
+        self.engine.set_headset_monitor(enabled=checked, device=dev, volume=vol)
+        self.config["headset_monitor_enabled"] = checked
+        save_config(self.config)
+
+    def _on_headset_device_changed(self):
+        dev = self.combo_headset_device.currentData()
+        if dev:
+            self.config["headset_monitor_device_name"] = dev.get("name", "")
+            if self.switch_headset.isChecked():
+                self.engine.set_headset_monitor(enabled=True, device=dev, volume=self.slider_headset_vol.value() / 100.0)
+            save_config(self.config)
+
+    def _on_headset_vol_changed(self, val):
+        self.lbl_headset_vol.setText(f"{val}%")
+        self.engine.set_headset_volume(val / 100.0)
+        self.config["headset_monitor_volume"] = val / 100.0
+        save_config(self.config)
+
+    def _on_headset_mute_toggled(self):
+        muted = self.btn_headset_mute.isChecked()
+        self._update_mute_button_style(self.btn_headset_mute, muted, self.slider_headset_vol, self.lbl_headset_vol)
+        if muted:
+            self.engine.set_headset_volume(0.0)
+        else:
+            self.engine.set_headset_volume(self.slider_headset_vol.value() / 100.0)
 
     def _toggle_stream(self):
         self.btn_toggle_stream.setEnabled(False)
@@ -1970,8 +2606,28 @@ class MainWindow(QMainWindow):
 
             samples = self.engine.get_latest_samples()
             self.visualizer.update_audio(samples)
+
+            # Update per-band LED meters on the Studio Equalizer faders
+            if hasattr(self, 'eq_sliders') and len(self.eq_sliders) == 7:
+                bars = self.visualizer.bar_values
+                if len(bars) >= 48:
+                    band_slices = [
+                        (0, 3),    # 60 Hz Sub
+                        (3, 7),    # 150 Hz Bass
+                        (7, 14),   # 400 Hz Low Mid
+                        (14, 23),  # 1 kHz Mids
+                        (23, 31),  # 2.5 kHz Presence
+                        (31, 39),  # 6 kHz Highs
+                        (39, 48),  # 15 kHz Air
+                    ]
+                    for idx, (s, e) in enumerate(band_slices):
+                        lvl = float(np.max(bars[s:e])) if e > s else 0.0
+                        self.eq_sliders[idx].set_meter_level(lvl)
         else:
             self.visualizer.update_audio(None)
+            if hasattr(self, 'eq_sliders'):
+                for fader in self.eq_sliders:
+                    fader.set_meter_level(0.0)
 
     def _setup_virtual_mic(self):
         ok, msg = virtual_mic.create_virtual_mic()

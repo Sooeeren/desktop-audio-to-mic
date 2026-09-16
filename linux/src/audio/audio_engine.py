@@ -99,6 +99,16 @@ class AudioEngine:
         # Ring buffer for live visualizer graph
         self._vis_samples = np.zeros(1024, dtype=np.float32)
 
+        # Headset audio monitoring & passthrough
+        self.headset_stream = None
+        self.headset_queue = collections.deque(maxlen=40)
+        self.headset_enabled = False
+        self.headset_volume = 1.0
+        self.headset_device = None
+        self._headset_lock = threading.Lock()
+        self.current_out_rate = None
+        self.current_out_ch = None
+
         # Worker thread
         self.worker_thread = None
         self.stop_event = threading.Event()
@@ -135,6 +145,105 @@ class AudioEngine:
             cur_bass = self.troll_bass
             cur_drive = self.troll_drive
         return apply_eq_and_fx(samples, sample_rate, cur_eq, cur_troll, cur_bass, cur_drive)
+
+    def set_headset_monitor(self, enabled: bool, device: dict = None, volume: float = None):
+        """Configures live headset audio monitoring / passthrough."""
+        with self._headset_lock:
+            self.headset_enabled = bool(enabled)
+            if device is not None:
+                self.headset_device = device
+            if volume is not None:
+                self.headset_volume = max(0.0, min(2.0, float(volume)))
+
+            if not self.headset_enabled:
+                if self.headset_stream:
+                    try:
+                        self.headset_stream.stop_stream()
+                        self.headset_stream.close()
+                    except Exception:
+                        pass
+                    self.headset_stream = None
+                self.headset_queue.clear()
+            elif self.is_running_flag and self.current_out_rate and self.current_out_ch and self.headset_device:
+                self._open_headset_stream_internal(self.current_out_rate, self.current_out_ch)
+
+    def set_headset_volume(self, volume: float):
+        with self._headset_lock:
+            self.headset_volume = max(0.0, min(2.0, float(volume)))
+
+    def _open_headset_stream_internal(self, out_rate: int, out_ch: int):
+        with self._headset_lock:
+            if not self.is_running_flag or not self.headset_enabled or not self.headset_device:
+                return
+
+            if self.headset_stream:
+                try:
+                    self.headset_stream.stop_stream()
+                    self.headset_stream.close()
+                except Exception:
+                    pass
+                self.headset_stream = None
+
+            try:
+                hs_info = self.headset_device.get("device_info", self.headset_device)
+                hs_idx = int(hs_info["index"])
+                hs_rate = int(hs_info.get("defaultSampleRate", out_rate))
+                hs_ch = int(min(2, hs_info.get("maxOutputChannels", 2)))
+
+                def headset_callback(in_data, frame_count, time_info, status):
+                    try:
+                        if not self.is_running_flag or not self.headset_enabled:
+                            return (b'\x00' * (frame_count * hs_ch * 2), pyaudio.paContinue)
+                        needed = frame_count
+                        frames = []
+                        collected = 0
+                        with self._headset_lock:
+                            while self.headset_queue and collected < needed:
+                                c = self.headset_queue.popleft()
+                                frames.append(c)
+                                collected += len(c)
+
+                        if frames:
+                            comb = np.concatenate(frames, axis=0)
+                            if comb.ndim == 1:
+                                comb = comb.reshape(-1, 1)
+                            if len(comb) >= needed:
+                                play = comb[:needed]
+                                rem = comb[needed:]
+                                if len(rem) > 0:
+                                    with self._headset_lock:
+                                        self.headset_queue.appendleft(rem)
+                            else:
+                                play = np.pad(comb, ((0, needed - len(comb)), (0, 0)))
+                        else:
+                            play = np.zeros((needed, out_ch), dtype=np.float32)
+
+                        if out_rate != hs_rate:
+                            play = resample_audio(play, out_rate, hs_rate)
+                        if play.shape[1] != hs_ch:
+                            play = adjust_channels(play, play.shape[1], hs_ch)
+
+                        eff = np.clip(play * self.headset_volume, -1.0, 1.0)
+                        out_b = (eff * 32767.0).astype(np.int16).tobytes()
+                        return (out_b, pyaudio.paContinue)
+                    except Exception as ex:
+                        logger.error(f"Error in headset_callback: {ex}")
+                        return (b'\x00' * (frame_count * hs_ch * 2), pyaudio.paContinue)
+
+                self.headset_stream = self.p.open(
+                    format=pyaudio.paInt16,
+                    channels=hs_ch,
+                    rate=hs_rate,
+                    output=True,
+                    output_device_index=hs_idx,
+                    stream_callback=headset_callback,
+                    frames_per_buffer=1024
+                )
+                self.headset_stream.start_stream()
+                logger.info(f"Headset monitor stream started on {self.headset_device.get('name')} ({hs_rate} Hz, {hs_ch} ch)")
+            except Exception as e:
+                logger.warning(f"Could not open headset monitor stream: {e}")
+                self.headset_stream = None
 
     def is_running(self) -> bool:
         return self.is_running_flag
@@ -294,6 +403,10 @@ class AudioEngine:
                         self._vis_samples = np.roll(self._vis_samples, -take)
                         self._vis_samples[-take:] = mono[:take]
 
+                    if self.headset_enabled:
+                        with self._headset_lock:
+                            self.headset_queue.append(np.copy(out))
+
                     out_int16 = (out * 32767.0).astype(np.int16)
                     return (out_int16.tobytes(), pyaudio.paContinue)
                 except Exception:
@@ -301,6 +414,9 @@ class AudioEngine:
                     return (silent.tobytes(), pyaudio.paContinue)
 
             # Open streams
+            self.current_out_rate = out_rate
+            self.current_out_ch = out_ch
+
             self.in_stream = self.p.open(
                 format=pyaudio.paInt16,
                 channels=in_ch,
@@ -337,13 +453,17 @@ class AudioEngine:
             if self.mic_stream:
                 self.mic_stream.start_stream()
             self.out_stream.start_stream()
+
+            if self.headset_enabled and self.headset_device:
+                self._open_headset_stream_internal(out_rate, out_ch)
+
             logger.info("Linux Audio Engine successfully started!")
 
     def stop(self):
         with self._stream_lock:
             self.is_running_flag = False
 
-            for s in [self.in_stream, self.mic_stream, self.out_stream]:
+            for s in [self.in_stream, self.mic_stream, self.out_stream, self.headset_stream]:
                 if s:
                     try:
                         s.stop_stream()
@@ -354,6 +474,9 @@ class AudioEngine:
             self.in_stream = None
             self.mic_stream = None
             self.out_stream = None
+            self.headset_stream = None
+            with self._headset_lock:
+                self.headset_queue.clear()
 
             if self.p:
                 try:

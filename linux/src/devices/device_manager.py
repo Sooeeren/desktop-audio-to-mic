@@ -33,7 +33,10 @@ def load_config() -> dict:
         "troll_mode": False,
         "troll_bass": 28.0,
         "troll_drive": 3.5,
-        "active_profile": "full_desktop"
+        "active_profile": "full_desktop",
+        "headset_monitor_enabled": False,
+        "headset_monitor_device_name": "",
+        "headset_monitor_volume": 1.0
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -223,3 +226,71 @@ class DeviceManager:
                 })
 
         return mics
+
+    def get_playback_devices(self) -> list[dict]:
+        """Find physical playback sinks (headphones, speakers) for headset monitoring."""
+        all_devs = self.get_audio_endpoints()
+        playbacks = []
+        for d in all_devs:
+            if d.get("maxOutputChannels", 0) > 0:
+                name = d.get("name", "")
+                name_lower = name.lower()
+                if "discorddesktop" in name_lower or "null" in name_lower or "virtual" in name_lower:
+                    continue
+                playbacks.append({
+                    "name": name,
+                    "display_name": f"🎧 {name}",
+                    "index": d["index"],
+                    "channels": d["maxOutputChannels"],
+                    "rate": int(d.get("defaultSampleRate", 48000)),
+                    "info": d
+                })
+        return playbacks
+
+    def generate_diagnostic_report(self, config: dict = None) -> str:
+        """Generates a comprehensive Linux diagnostic report."""
+        import platform
+        import datetime
+        lines = []
+        lines.append("=" * 60)
+        lines.append("  DESKTOP AUDIO TO MIC - LINUX DIAGNOSTIC REPORT")
+        lines.append(f"  Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append("[1. SYSTEM ENVIRONMENT]")
+        lines.append(f"OS: Linux {platform.release()} ({platform.version()})")
+        lines.append(f"Machine: {platform.machine()}")
+        lines.append(f"Python: {platform.python_version()} ({sys.executable})")
+        lines.append("")
+        lines.append("[2. AUDIO ENDPOINTS]")
+        all_devs = self.get_audio_endpoints()
+        lines.append(f"Total Detected Endpoints: {len(all_devs)}")
+        for d in all_devs:
+            lines.append(f"  [{d.get('index')}] {d.get('name')} | In:{d.get('maxInputChannels',0)} Out:{d.get('maxOutputChannels',0)} | {d.get('defaultSampleRate',0)}Hz")
+        lines.append("")
+        lines.append("[3. PULSEAUDIO / PIPEWIRE STATUS]")
+        try:
+            from linux.src.devices import virtual_mic
+        except ImportError:
+            try:
+                from src.devices import virtual_mic
+            except ImportError:
+                import virtual_mic
+        pactl_avail = virtual_mic.is_pactl_available()
+        lines.append(f"pactl Available: {pactl_avail}")
+        if pactl_avail:
+            ok, out = virtual_mic._run_pactl("info")
+            if ok:
+                lines.append(out)
+            ok, sources = virtual_mic._run_pactl("list", "short", "sources")
+            if ok:
+                lines.append("\nSources:\n" + sources)
+            ok, sinks = virtual_mic._run_pactl("list", "short", "sinks")
+            if ok:
+                lines.append("\nSinks:\n" + sinks)
+        lines.append("")
+        lines.append("[4. CONFIGURATION]")
+        lines.append(json.dumps(load_config(), indent=2))
+        lines.append("")
+        lines.append("=" * 60)
+        return "\n".join(lines)
