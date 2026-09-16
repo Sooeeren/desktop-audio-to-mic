@@ -24,7 +24,11 @@ def excepthook(exc_type, exc_value, exc_tb):
         return
 
     err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+    if getattr(sys, 'frozen', False):
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+    log_path = os.path.join(app_dir, "crash.log")
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n--- LINUX CRASH REPORT ---\n{err_msg}\n")

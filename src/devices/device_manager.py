@@ -607,3 +607,29 @@ def open_windows_app_volume_settings():
         print(f"Error opening settings: {e}", file=sys.stderr)
 
 
+def mute_default_speakers(mute: bool) -> bool:
+    """Mutes or unmutes the default Windows playback endpoint (physical speakers)."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        speakers = AudioUtilities.GetSpeakers()
+        if speakers and hasattr(speakers, 'EndpointVolume'):
+            speakers.EndpointVolume.SetMute(int(mute), None)
+            return True
+    except Exception as e:
+        print(f"Error setting default speaker mute: {e}", file=sys.stderr)
+    return False
+
+
+def is_default_speakers_muted() -> bool:
+    """Returns True if the default Windows playback endpoint is currently muted."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+        speakers = AudioUtilities.GetSpeakers()
+        if speakers and hasattr(speakers, 'EndpointVolume'):
+            return bool(speakers.EndpointVolume.GetMute())
+    except Exception:
+        pass
+    return False
+
+
+

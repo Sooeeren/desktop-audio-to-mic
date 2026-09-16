@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
 
 try:
     from linux.src.devices.device_manager import (
-        DeviceManager, load_config, save_config, open_linux_volume_control
+        DeviceManager, load_config, save_config, open_linux_volume_control,
+        mute_default_speakers, is_default_speakers_muted
     )
     from linux.src.audio.audio_engine import AudioEngine, EQ_FREQUENCIES
     from linux.src.devices import virtual_mic
@@ -33,14 +34,16 @@ try:
 except ImportError:
     try:
         from src.devices.device_manager import (
-            DeviceManager, load_config, save_config, open_linux_volume_control
+            DeviceManager, load_config, save_config, open_linux_volume_control,
+            mute_default_speakers, is_default_speakers_muted
         )
         from src.audio.audio_engine import AudioEngine, EQ_FREQUENCIES
         from src.devices import virtual_mic
         from src.utils.updater import UpdateCheckWorker, CURRENT_VERSION, RELEASES_URL
     except ImportError:
         from device_manager import (
-            DeviceManager, load_config, save_config, open_linux_volume_control
+            DeviceManager, load_config, save_config, open_linux_volume_control,
+            mute_default_speakers, is_default_speakers_muted
         )
         from audio_engine import AudioEngine, EQ_FREQUENCIES
         import virtual_mic
@@ -445,8 +448,25 @@ class ToggleSwitch(QWidget):
         self.text = text
         self._checked = False
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(24)
-        self.setMinimumWidth(50)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._update_geometry()
+
+    def _update_geometry(self):
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self.text) if self.text else 0
+        total_w = 46 + (text_w + 10 if self.text else 0)
+        self.setFixedSize(total_w, 26)
+
+    def setText(self, text: str):
+        self.text = text
+        self._update_geometry()
+        self.update()
+
+    def sizeHint(self):
+        return self.size()
+
+    def minimumSizeHint(self):
+        return self.size()
 
     def isChecked(self) -> bool:
         return self._checked
@@ -1569,9 +1589,23 @@ class MainWindow(QMainWindow):
         v_row_h.addWidget(self.btn_headset_mute)
         ch_v.addLayout(v_row_h)
 
-        h_hint = QLabel("Plays audio directly into your headphones so you can mute external speakers or monitor Discord output.")
-        h_hint.setStyleSheet("color: #949ba4; font-size: 11px;")
-        ch_v.addWidget(h_hint)
+        # Silent Room Mode Controls Row
+        sr_row = QHBoxLayout()
+        sr_row.setSpacing(8)
+        self.btn_silent_room = QPushButton("🔇 Silent Room: Mute PC Speakers")
+        self.btn_silent_room.setCheckable(True)
+        self.btn_silent_room.setProperty("class", "ghost")
+        self.btn_silent_room.setToolTip("Mutes external PC speakers so audio is only heard through your headphones.")
+        self.btn_silent_room.clicked.connect(self._on_silent_room_toggled)
+        sr_row.addWidget(self.btn_silent_room, 1)
+
+        self.btn_sound_settings = QPushButton("⚙️ Sound Mixer")
+        self.btn_sound_settings.setProperty("class", "ghost")
+        self.btn_sound_settings.setToolTip("Open Volume Control (pavucontrol)")
+        self.btn_sound_settings.clicked.connect(open_linux_volume_control)
+        sr_row.addWidget(self.btn_sound_settings)
+        ch_v.addLayout(sr_row)
+
         left_col.addWidget(c_headset)
 
         grid.addLayout(left_col, 1)
@@ -2143,16 +2177,17 @@ class MainWindow(QMainWindow):
         save_config(self.config)
 
     def _update_eq_labels(self):
-        for i, slider in enumerate(self.eq_sliders):
-            v = slider.value()
-            txt = f"+{v} dB" if v > 0 else f"{v} dB"
-            self.eq_val_labels[i].setText(txt)
-            if v > 0:
-                self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #23a55a;")
-            elif v < 0:
-                self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #f0b232;")
-            else:
-                self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #5865f2;")
+        if hasattr(self, 'eq_val_labels') and len(self.eq_val_labels) == len(self.eq_sliders):
+            for i, slider in enumerate(self.eq_sliders):
+                v = slider.value()
+                txt = f"+{v} dB" if v > 0 else f"{v} dB"
+                self.eq_val_labels[i].setText(txt)
+                if v > 0:
+                    self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #23a55a;")
+                elif v < 0:
+                    self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #f0b232;")
+                else:
+                    self.eq_val_labels[i].setStyleSheet("font-size: 11px; font-weight: bold; color: #5865f2;")
 
     def _apply_eq_preset(self, values: list):
         for i, val in enumerate(values):
@@ -2266,6 +2301,7 @@ class MainWindow(QMainWindow):
             self.combo_real_mic.addItem(m["display_name"], m)
 
         playbacks = self.dm.get_playback_devices()
+        self.combo_headset_device.addItem("🚫 Headset Monitoring Disabled", None)
         for pb in playbacks:
             self.combo_headset_device.addItem(pb["display_name"], pb)
 
@@ -2341,27 +2377,44 @@ class MainWindow(QMainWindow):
 
         # Headset Monitor Configuration
         h_enabled = self.config.get("headset_monitor_enabled", False)
-        self.switch_headset.setChecked(h_enabled)
-        self.combo_headset_device.setEnabled(h_enabled)
-        self.slider_headset_vol.setEnabled(h_enabled)
-        self.btn_headset_mute.setEnabled(h_enabled)
-
         h_name = self.config.get("headset_monitor_device_name", "")
+        matched_headset = False
         if h_name:
             for i in range(self.combo_headset_device.count()):
                 d = self.combo_headset_device.itemData(i)
                 if d and h_name.lower() in d.get("name", "").lower():
+                    self.combo_headset_device.blockSignals(True)
                     self.combo_headset_device.setCurrentIndex(i)
+                    self.combo_headset_device.blockSignals(False)
+                    matched_headset = True
                     break
+
+        if not matched_headset or not h_enabled:
+            self.combo_headset_device.blockSignals(True)
+            self.combo_headset_device.setCurrentIndex(0)
+            self.combo_headset_device.blockSignals(False)
+            self.switch_headset.setChecked(False)
+            self.slider_headset_vol.setEnabled(False)
+            self.btn_headset_mute.setEnabled(False)
+        else:
+            self.switch_headset.setChecked(True)
+            self.slider_headset_vol.setEnabled(True)
+            self.btn_headset_mute.setEnabled(True)
 
         h_vol = int(self.config.get("headset_monitor_volume", 1.0) * 100)
         self.slider_headset_vol.setValue(h_vol)
         self.lbl_headset_vol.setText(f"{h_vol}%")
         self.engine.set_headset_monitor(
-            enabled=h_enabled,
+            enabled=h_enabled if matched_headset else False,
             device=self.combo_headset_device.currentData(),
             volume=h_vol / 100.0
         )
+
+        # Silent Room Status
+        sr_enabled = self.config.get("silent_room_enabled", False)
+        if is_default_speakers_muted():
+            sr_enabled = True
+        self._update_silent_room_button_style(sr_enabled)
 
     def _save_current_config(self):
         cur_desk = self.combo_desktop.currentText()
@@ -2370,10 +2423,8 @@ class MainWindow(QMainWindow):
         cur_mic = cur_mic_data.get("name", "") if cur_mic_data else ""
 
         h_data = self.combo_headset_device.currentData()
-        if h_data:
-            self.config["headset_monitor_device_name"] = h_data.get("name", "")
-
-        self.config["headset_monitor_enabled"] = self.switch_headset.isChecked()
+        self.config["headset_monitor_device_name"] = h_data.get("name", "") if h_data else ""
+        self.config["headset_monitor_enabled"] = self.switch_headset.isChecked() and (h_data is not None)
         self.config["headset_monitor_volume"] = self.slider_headset_vol.value() / 100.0
         self.config["desktop_source_name"] = cur_desk
         self.config["target_mic_name"] = cur_tgt
@@ -2484,22 +2535,57 @@ class MainWindow(QMainWindow):
         self._save_current_config()
 
     def _on_headset_toggled(self, checked: bool):
-        self.combo_headset_device.setEnabled(checked)
-        self.slider_headset_vol.setEnabled(checked)
-        self.btn_headset_mute.setEnabled(checked)
-        dev = self.combo_headset_device.currentData()
-        vol = self.slider_headset_vol.value() / 100.0
-        self.engine.set_headset_monitor(enabled=checked, device=dev, volume=vol)
-        self.config["headset_monitor_enabled"] = checked
+        if not checked:
+            self.combo_headset_device.blockSignals(True)
+            self.combo_headset_device.setCurrentIndex(0)
+            self.combo_headset_device.blockSignals(False)
+            self.slider_headset_vol.setEnabled(False)
+            self.btn_headset_mute.setEnabled(False)
+            self.engine.set_headset_monitor(enabled=False)
+            self.config["headset_monitor_enabled"] = False
+        else:
+            if self.combo_headset_device.currentIndex() == 0 and self.combo_headset_device.count() > 1:
+                best_idx = 1
+                for i in range(1, self.combo_headset_device.count()):
+                    d = self.combo_headset_device.itemData(i)
+                    if d and any(k in d.get("name", "").lower() for k in ["headphone", "headset", "earphone"]):
+                        best_idx = i
+                        break
+                self.combo_headset_device.blockSignals(True)
+                self.combo_headset_device.setCurrentIndex(best_idx)
+                self.combo_headset_device.blockSignals(False)
+            dev = self.combo_headset_device.currentData()
+            self.slider_headset_vol.setEnabled(True)
+            self.btn_headset_mute.setEnabled(True)
+            vol = self.slider_headset_vol.value() / 100.0
+            self.engine.set_headset_monitor(enabled=True, device=dev, volume=vol)
+            self.config["headset_monitor_enabled"] = True
+            if dev:
+                self.config["headset_monitor_device_name"] = dev.get("name", "")
         save_config(self.config)
 
-    def _on_headset_device_changed(self):
+    def _on_headset_device_changed(self, index: int = None):
         dev = self.combo_headset_device.currentData()
-        if dev:
+        if dev is None:
+            self.switch_headset.blockSignals(True)
+            self.switch_headset.setChecked(False)
+            self.switch_headset.blockSignals(False)
+            self.slider_headset_vol.setEnabled(False)
+            self.btn_headset_mute.setEnabled(False)
+            self.config["headset_monitor_enabled"] = False
+            self.config["headset_monitor_device_name"] = ""
+            self.engine.set_headset_monitor(enabled=False)
+        else:
+            self.switch_headset.blockSignals(True)
+            self.switch_headset.setChecked(True)
+            self.switch_headset.blockSignals(False)
+            self.slider_headset_vol.setEnabled(True)
+            self.btn_headset_mute.setEnabled(True)
+            self.config["headset_monitor_enabled"] = True
             self.config["headset_monitor_device_name"] = dev.get("name", "")
-            if self.switch_headset.isChecked():
-                self.engine.set_headset_monitor(enabled=True, device=dev, volume=self.slider_headset_vol.value() / 100.0)
-            save_config(self.config)
+            vol = self.slider_headset_vol.value() / 100.0
+            self.engine.set_headset_monitor(enabled=True, device=dev, volume=vol)
+        save_config(self.config)
 
     def _on_headset_vol_changed(self, val):
         self.lbl_headset_vol.setText(f"{val}%")
@@ -2514,6 +2600,55 @@ class MainWindow(QMainWindow):
             self.engine.set_headset_volume(0.0)
         else:
             self.engine.set_headset_volume(self.slider_headset_vol.value() / 100.0)
+
+    def _on_silent_room_toggled(self, checked: bool):
+        mute_default_speakers(checked)
+        self._update_silent_room_button_style(checked)
+        self.config["silent_room_enabled"] = checked
+        save_config(self.config)
+
+    def _update_silent_room_button_style(self, muted: bool):
+        if not hasattr(self, 'btn_silent_room'):
+            return
+        if muted:
+            self.btn_silent_room.blockSignals(True)
+            self.btn_silent_room.setChecked(True)
+            self.btn_silent_room.blockSignals(False)
+            self.btn_silent_room.setText("🔇 Silent Room ACTIVE (Speakers Muted)")
+            self.btn_silent_room.setStyleSheet("""
+                QPushButton {
+                    background-color: #da373c;
+                    color: #ffffff;
+                    font-weight: bold;
+                    border: 1px solid #da373c;
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #a1282c;
+                }
+            """)
+        else:
+            self.btn_silent_room.blockSignals(True)
+            self.btn_silent_room.setChecked(False)
+            self.btn_silent_room.blockSignals(False)
+            self.btn_silent_room.setText("🔊 Silent Room OFF (Speakers Active)")
+            self.btn_silent_room.setStyleSheet("""
+                QPushButton {
+                    background-color: #2b2d31;
+                    color: #949ba4;
+                    font-weight: normal;
+                    border: 1px solid #3f4147;
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #35373c;
+                    color: #f2f3f5;
+                }
+            """)
 
     def _toggle_stream(self):
         self.btn_toggle_stream.setEnabled(False)

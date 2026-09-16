@@ -294,3 +294,26 @@ class DeviceManager:
         lines.append("")
         lines.append("=" * 60)
         return "\n".join(lines)
+
+
+def mute_default_speakers(mute: bool) -> bool:
+    """Mutes or unmutes the default PulseAudio / PipeWire sink."""
+    try:
+        import subprocess
+        cmd = ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if mute else "0"]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return res.returncode == 0
+    except Exception as e:
+        print(f"Error muting Linux default sink: {e}", file=sys.stderr)
+        return False
+
+
+def is_default_speakers_muted() -> bool:
+    """Checks if default PulseAudio / PipeWire sink is muted."""
+    try:
+        import subprocess
+        res = subprocess.run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"], capture_output=True, text=True)
+        return "yes" in res.stdout.lower()
+    except Exception:
+        return False
+
