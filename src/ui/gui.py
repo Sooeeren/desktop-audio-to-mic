@@ -1112,7 +1112,7 @@ class MainWindow(QMainWindow):
         foot.addWidget(self.lbl_install_status)
 
         foot.addStretch()
-        foot_hint = QLabel("Everything visible in one view • No scrolling needed")
+        foot_hint = QLabel("Low-Latency Audio Streamer • 48 kHz Stereo")
         foot_hint.setStyleSheet("color: #949ba4; font-size: 11px;")
         foot.addWidget(foot_hint)
         root.addLayout(foot)
