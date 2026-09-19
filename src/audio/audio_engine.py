@@ -81,51 +81,7 @@ def adjust_channels(data: np.ndarray, in_ch: int, out_ch: int) -> np.ndarray:
             return data[:, :out_ch]
     except Exception as e:
         logger.error(f"Error in adjust_channels: {e}")
-EQ_FREQUENCIES = [60, 150, 400, 1000, 2500, 6000, 15000]
-
-
-def apply_eq_and_fx(samples: np.ndarray, sample_rate: int, eq_gains: list, troll_mode: bool, troll_bass: float, troll_drive: float) -> np.ndarray:
-    """
-    Applies 7-band parametric EQ and optional Troll Mode (sub-bass boost + saturation).
-    """
-    has_eq = any(abs(g) > 0.1 for g in eq_gains)
-    if not has_eq and not troll_mode:
-        return samples
-
-    n = len(samples)
-    if n < 16:
-        return samples
-
-    try:
-        freqs = np.fft.rfftfreq(n, 1.0 / sample_rate)
-
-        if has_eq:
-            log_f = np.log10(np.maximum(freqs, 20.0))
-            log_centers = np.log10(EQ_FREQUENCIES)
-            gain_db = np.interp(log_f, log_centers, eq_gains)
-            gain_linear = 10.0 ** (gain_db / 20.0)
-        else:
-            gain_linear = np.ones_like(freqs)
-
-        if troll_mode:
-            troll_boost = 10.0 ** (troll_bass / 20.0)
-            troll_curve = np.where(freqs < 120, troll_boost, np.where(freqs < 280, 1.0 + (troll_boost - 1.0) * (280 - freqs) / 160.0, 1.0))
-            gain_linear *= troll_curve
-
-        fft_vals = np.fft.rfft(samples, axis=0)
-        fft_vals *= gain_linear[:, None]
-        filtered = np.fft.irfft(fft_vals, n=n, axis=0)
-
-        if troll_mode:
-            filtered = np.tanh(filtered * troll_drive)
-            filtered = np.clip(filtered, -0.98, 0.98)
-        else:
-            filtered = np.clip(filtered, -1.0, 1.0)
-
-        return filtered.astype(np.float32)
-    except Exception as ex:
-        logger.error(f"Error in apply_eq_and_fx: {ex}")
-        return samples
+        return np.zeros((len(data), out_ch), dtype=np.float32)
 
 
 class AudioEngine:
@@ -152,28 +108,11 @@ class AudioEngine:
         self.keepalive_stream = None
         self.mic_stream = None
         self.out_stream = None
-        self.headset_stream = None
 
         # Thread-safe audio queues
         self.desktop_queue = collections.deque(maxlen=40)
         self.mic_queue = collections.deque(maxlen=40)
-        self.headset_queue = collections.deque(maxlen=40)
         self._queue_lock = threading.Lock()
-        self._headset_lock = threading.Lock()
-
-        # Headset audio monitoring & passthrough
-        self.headset_enabled = False
-        self.headset_volume = 1.0
-        self.headset_device = None
-        self.current_out_rate = None
-        self.current_out_ch = None
-
-        # DSP Equalizer & Troll Mode FX
-        self.eq_bands = [0.0] * 7
-        self.troll_mode = False
-        self.troll_bass = 28.0
-        self.troll_drive = 3.5
-        self._fx_lock = threading.Lock()
 
         self._stream_lock = threading.RLock()
 
@@ -181,138 +120,16 @@ class AudioEngine:
         return self.is_running_flag
 
     def set_desktop_volume(self, vol: float):
-        self.desktop_volume = max(0.0, min(2.0, vol))
+        self.desktop_volume = max(0.0, min(5.0, vol))
 
     def set_desktop_muted(self, muted: bool):
         self.desktop_muted = bool(muted)
 
     def set_mic_volume(self, vol: float):
-        self.mic_volume = max(0.0, min(2.0, vol))
+        self.mic_volume = max(0.0, min(5.0, vol))
 
     def set_mic_muted(self, muted: bool):
         self.mic_muted = bool(muted)
-
-    def set_eq_bands(self, bands: list):
-        """Sets 7-band EQ gains in dB (-12.0 to +12.0)."""
-        with self._fx_lock:
-            self.eq_bands = [float(b) for b in bands[:7]]
-
-    def set_troll_mode(self, enabled: bool, bass: float = 28.0, drive: float = 3.5):
-        """Toggles Troll Mode (extreme sub-bass boost & soft-clip overdrive)."""
-        with self._fx_lock:
-            self.troll_mode = bool(enabled)
-            self.troll_bass = float(bass)
-            self.troll_drive = float(drive)
-
-    def apply_eq_and_fx(self, samples: np.ndarray, sample_rate: int = 48000) -> np.ndarray:
-        """Applies current EQ and Troll Mode FX to an audio chunk."""
-        with self._fx_lock:
-            cur_eq = list(self.eq_bands)
-            cur_troll = self.troll_mode
-            cur_bass = self.troll_bass
-            cur_drive = self.troll_drive
-        return apply_eq_and_fx(samples, sample_rate, cur_eq, cur_troll, cur_bass, cur_drive)
-
-    def set_headset_monitor(self, enabled: bool, device: dict = None, volume: float = None):
-        """Configures live headset audio monitoring / passthrough."""
-        with self._headset_lock:
-            self.headset_enabled = bool(enabled)
-            if device is not None:
-                self.headset_device = device
-            if volume is not None:
-                self.headset_volume = max(0.0, min(2.0, float(volume)))
-
-            if not self.headset_enabled:
-                if self.headset_stream:
-                    try:
-                        if self.headset_stream.is_active():
-                            self.headset_stream.stop_stream()
-                        self.headset_stream.close()
-                    except Exception:
-                        pass
-                    self.headset_stream = None
-                self.headset_queue.clear()
-            elif self.is_running_flag and self.current_out_rate and self.current_out_ch and self.headset_device:
-                self._open_headset_stream_internal(self.current_out_rate, self.current_out_ch)
-
-    def set_headset_volume(self, volume: float):
-        with self._headset_lock:
-            self.headset_volume = max(0.0, min(2.0, float(volume)))
-
-    def _open_headset_stream_internal(self, out_rate: int, out_ch: int):
-        with self._headset_lock:
-            if not self.is_running_flag or not self.headset_enabled or not self.headset_device:
-                return
-
-            if self.headset_stream:
-                try:
-                    if self.headset_stream.is_active():
-                        self.headset_stream.stop_stream()
-                    self.headset_stream.close()
-                except Exception:
-                    pass
-                self.headset_stream = None
-
-            try:
-                hs_info = self.headset_device.get("device_info", self.headset_device)
-                hs_idx = int(hs_info["index"])
-                hs_rate = int(hs_info.get("defaultSampleRate", out_rate))
-                hs_ch = int(min(2, hs_info.get("maxOutputChannels", 2)))
-
-                def headset_callback(in_data, frame_count, time_info, status):
-                    try:
-                        if not self.is_running_flag or not self.headset_enabled:
-                            return (b'\x00' * (frame_count * hs_ch * 2), pyaudio.paContinue)
-                        needed = frame_count
-                        frames = []
-                        collected = 0
-                        with self._headset_lock:
-                            while self.headset_queue and collected < needed:
-                                c = self.headset_queue.popleft()
-                                frames.append(c)
-                                collected += len(c)
-
-                        if frames:
-                            comb = np.concatenate(frames, axis=0)
-                            if comb.ndim == 1:
-                                comb = comb.reshape(-1, 1)
-                            if len(comb) >= needed:
-                                play = comb[:needed]
-                                rem = comb[needed:]
-                                if len(rem) > 0:
-                                    with self._headset_lock:
-                                        self.headset_queue.appendleft(rem)
-                            else:
-                                play = np.pad(comb, ((0, needed - len(comb)), (0, 0)))
-                        else:
-                            play = np.zeros((needed, out_ch), dtype=np.float32)
-
-                        if out_rate != hs_rate:
-                            play = resample_audio(play, out_rate, hs_rate)
-                        if play.shape[1] != hs_ch:
-                            play = adjust_channels(play, play.shape[1], hs_ch)
-
-                        eff = np.clip(play * self.headset_volume, -1.0, 1.0)
-                        out_b = (eff * 32767.0).astype(np.int16).tobytes()
-                        return (out_b, pyaudio.paContinue)
-                    except Exception as ex:
-                        logger.error(f"Error in headset_callback: {ex}")
-                        return (b'\x00' * (frame_count * hs_ch * 2), pyaudio.paContinue)
-
-                self.headset_stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=hs_ch,
-                    rate=hs_rate,
-                    output=True,
-                    output_device_index=hs_idx,
-                    stream_callback=headset_callback,
-                    frames_per_buffer=1024
-                )
-                self.headset_stream.start_stream()
-                logger.info(f"Headset monitor stream started on {self.headset_device.get('name')} ({hs_rate} Hz, {hs_ch} ch)")
-            except Exception as e:
-                logger.warning(f"Could not open headset monitor stream: {e}")
-                self.headset_stream = None
 
     def get_meter_levels(self) -> tuple[float, float, float]:
         """Returns instantaneous (desktop, mic, output) audio levels (0.0 - 1.0)."""
@@ -529,30 +346,10 @@ class AudioEngine:
                     else:
                         to_play = np.clip(d_play, -1.0, 1.0)
 
-                    # Apply Equalizer & Troll Mode FX
-                    with self._fx_lock:
-                        cur_eq = list(self.eq_bands)
-                        cur_troll = self.troll_mode
-                        cur_bass = self.troll_bass
-                        cur_drive = self.troll_drive
-
-                    if any(abs(g) > 0.1 for g in cur_eq) or cur_troll:
-                        to_play = apply_eq_and_fx(to_play, out_rate, cur_eq, cur_troll, cur_bass, cur_drive)
-
-                    # Compute output level and store samples for visualizer
+                    # Compute output level for visualizer
                     peak_out = float(np.max(np.abs(to_play))) if len(to_play) > 0 else 0.0
                     with self._meter_lock:
                         self.meter_out = max(self.meter_out, min(1.0, peak_out))
-                        mono_vis = np.mean(to_play, axis=1) if to_play.ndim > 1 else to_play
-                        if len(mono_vis) >= 1024:
-                            self.latest_samples = np.copy(mono_vis[-1024:])
-                        elif len(mono_vis) > 0:
-                            self.latest_samples = np.pad(mono_vis, (0, 1024 - len(mono_vis)))
-
-                    # If headset monitor is active, push a copy to the headset queue
-                    if self.headset_enabled:
-                        with self._headset_lock:
-                            self.headset_queue.append(np.copy(to_play))
 
                     out_bytes = (to_play * 32767.0).astype(np.int16).tobytes()
                     return (out_bytes, pyaudio.paContinue)
@@ -562,9 +359,6 @@ class AudioEngine:
 
             try:
                 # Open streams
-                self.current_out_rate = out_rate
-                self.current_out_ch = out_ch
-
                 self.keepalive_stream = self.p.open(
                     format=pyaudio.paInt16,
                     channels=speaker_ch,
@@ -614,9 +408,6 @@ class AudioEngine:
                     self.mic_stream.start_stream()
                 self.out_stream.start_stream()
 
-                if self.headset_enabled and self.headset_device:
-                    self._open_headset_stream_internal(out_rate, out_ch)
-
                 logger.info("Audio engine successfully started!")
             except Exception as e:
                 self.stop()
@@ -628,7 +419,7 @@ class AudioEngine:
         with self._stream_lock:
             self.is_running_flag = False
 
-            for stream in [self.lb_stream, self.keepalive_stream, self.mic_stream, self.out_stream, self.headset_stream]:
+            for stream in [self.lb_stream, self.keepalive_stream, self.mic_stream, self.out_stream]:
                 if stream:
                     try:
                         if stream.is_active():
@@ -641,9 +432,6 @@ class AudioEngine:
             self.keepalive_stream = None
             self.mic_stream = None
             self.out_stream = None
-            self.headset_stream = None
-            with self._headset_lock:
-                self.headset_queue.clear()
 
             if self.p:
                 try:

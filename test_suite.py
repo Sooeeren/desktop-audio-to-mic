@@ -63,7 +63,10 @@ def test_streaming_pipeline():
     assert isinstance(levels, tuple) and len(levels) == 3, "Invalid meter level tuple"
 
     # Test volume and mute changes
-    engine.set_desktop_volume(1.5)
+    engine.set_desktop_volume(5.0)
+    assert engine.desktop_volume == 5.0, f"Expected 5.0 desktop vol, got {engine.desktop_volume}"
+    engine.set_mic_volume(5.0)
+    assert engine.mic_volume == 5.0, f"Expected 5.0 mic vol, got {engine.mic_volume}"
     engine.set_desktop_muted(True)
     engine.set_desktop_muted(False)
 
@@ -81,6 +84,8 @@ def test_gui_initialization():
     assert window is not None, "Failed to instantiate MainWindow"
     assert window.combo_desktop.count() > 0, "Desktop combobox is empty"
     assert window.combo_target.count() > 0, "Target combobox is empty"
+    assert window.slider_desktop_vol.maximum() == 500, f"Expected max 500, got {window.slider_desktop_vol.maximum()}"
+    assert window.slider_mic_vol.maximum() == 500, f"Expected max 500, got {window.slider_mic_vol.maximum()}"
 
     # Test stream toggle
     window._start_stream()
