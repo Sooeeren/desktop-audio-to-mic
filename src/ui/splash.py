@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor
 
 
 class ModernSplashScreen(QWidget):
-    def __init__(self, version: str = "v1.3.0"):
+    def __init__(self, version: str = "v1.4.0"):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.SplashScreen)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
